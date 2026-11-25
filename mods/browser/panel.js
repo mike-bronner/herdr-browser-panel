@@ -1,3 +1,5 @@
+import { installPlan } from "./install.js";
+
 export function sessionName(terminalId) {
   return typeof terminalId === "string" && /^[A-Za-z0-9_-]+$/.test(terminalId) ? `herdr-${terminalId}` : null;
 }
@@ -51,7 +53,7 @@ export function feedKey(state, target, visible, shownAt) {
   return `${targetKey(target)}|${state.pid ?? ""}|${state.port}`;
 }
 
-export function panelState({ target, scan, start }) {
+export function panelState({ target, scan, start, install }) {
   if (!target) return { kind: "idle" };
   const where = { session: target.session, machine: target.machine, address: target.address };
   if (!target.session) return { kind: "unsupported", ...where };
@@ -59,12 +61,20 @@ export function panelState({ target, scan, start }) {
   const found = fresh ? findSession(fresh.sessions, target.session) : null;
   if (found) return { kind: "running", ...where, at: fresh.at, pid: found.pid, port: found.port, url: found.url, engine: found.engine, os: fresh.os ?? null };
   if (start?.status === "starting") return { kind: "starting", ...where };
+  if (install?.status === "installing") return { kind: "installing", ...where, via: install.via, step: install.step, of: install.of, label: install.label };
   if (!fresh) return { kind: "looking", ...where };
   if (fresh.error) return { kind: "unreachable", ...where, error: fresh.error };
+  const failed = install?.status === "failed" ? install : null;
+  if (fresh.tools?.agentBrowser === false) {
+    const plan = installPlan(fresh.os, fresh.tools);
+    const error = failed?.error
+      ?? (install?.status === "installed" ? "The install finished, but this machine's PATH still does not find agent-browser." : plan.reason);
+    return { kind: "missing", ...where, via: plan.via, plan: plan.command, command: failed?.command ?? plan.command, error, hint: plan.hint, ifSudo: plan.hint };
+  }
   const error = start?.status === "failed" ? start.error
     : start?.status === "started" ? `agent-browser started, but no session named ${target.session} showed up`
-    : null;
-  return { kind: "start", ...where, error };
+    : failed?.error ?? null;
+  return { kind: "start", ...where, error, command: start ? null : failed?.command ?? null, hint: !start && install?.status === "installed" ? install.hint ?? null : null };
 }
 
 export function settledStart(state, start) {

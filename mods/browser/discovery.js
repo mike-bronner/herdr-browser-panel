@@ -1,5 +1,14 @@
 export const DISCOVER = [
-  `printf '{"os":"%s"}\\n' "$(uname -s)"`,
+  `if command -v agent-browser >/dev/null 2>&1; then`,
+  `  printf '{"os":"%s","agentBrowser":true}\\n' "$(uname -s)"`,
+  `else`,
+  `  brew=false; command -v brew >/dev/null 2>&1 && brew=true`,
+  `  npm=false; command -v npm >/dev/null 2>&1 && npm=true`,
+  `  node=$(node -v 2>/dev/null | head -n 1 | tr -cd '0-9.')`,
+  `  root=false`,
+  `  [ "$(uname -s)" = Linux ] && [ "$(id -u 2>/dev/null)" = 0 ] && root=true`,
+  `  printf '{"os":"%s","agentBrowser":false,"brew":%s,"npm":%s,"node":"%s","root":%s}\\n' "$(uname -s)" "$brew" "$npm" "$node" "$root"`,
+  `fi`,
   `seen=" "`,
   `for d in "\${AGENT_BROWSER_SOCKET_DIR:-}" "\${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/agent-browser}" "$HOME/.agent-browser" "\${TMPDIR:-/tmp}/agent-browser"; do`,
   `  [ -n "$d" ] && [ -d "$d" ] && [ -O "$d" ] || continue`,
@@ -25,7 +34,7 @@ export const DISCOVER = [
 ].join("\n");
 
 export function parseDiscovery(stdout) {
-  let os = null;
+  let os = null, tools = null;
   const sessions = [];
   for (const line of String(stdout ?? "").split("\n")) {
     if (!line.trim()) continue;
@@ -35,7 +44,7 @@ export function parseDiscovery(stdout) {
     } catch {
       try { row = JSON.parse(line.replace(/,"target":.*\}$/, ',"target":null}')); } catch { continue; }
     }
-    if (row.os !== undefined) { os = row.os; continue; }
+    if (row.os !== undefined) { os = row.os; tools = readTools(row); continue; }
     if (!row.session) continue;
     const dir = typeof row.dir === "string" ? row.dir : "";
     sessions.push({
@@ -49,7 +58,17 @@ export function parseDiscovery(stdout) {
     });
   }
   sessions.sort((a, b) => a.session.localeCompare(b.session) || a.dir.localeCompare(b.dir));
-  return { os, sessions };
+  return { os, tools, sessions };
+}
+
+function readTools(row) {
+  return {
+    agentBrowser: typeof row.agentBrowser === "boolean" ? row.agentBrowser : null,
+    brew: row.brew === true,
+    npm: row.npm === true,
+    node: typeof row.node === "string" && row.node ? row.node : null,
+    root: row.root === true,
+  };
 }
 
 export function brief(url) {

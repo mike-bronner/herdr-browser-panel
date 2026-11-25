@@ -180,7 +180,7 @@ test("panelState shows running even while a start is still pending", () => {
 test("panelState offers the start control when the machine answered with no session", () => {
   const other = { ...running, session: "herdr-t7" };
   assert.deepEqual(panelState({ target: remote, scan: { sessions: [other], error: null } }),
-    { kind: "start", session: "herdr-t6", machine: "build_box", address: "build_box/t6", error: null });
+    { kind: "start", session: "herdr-t6", machine: "build_box", address: "build_box/t6", error: null, command: null, hint: null });
 });
 
 test("panelState withholds the start control when the machine could not be asked", () => {
@@ -287,4 +287,99 @@ test("takesKeys is true only while the picture has focus and the stream is live"
 
 test("takesKeys leaves keys to Herdr while the stream connects, retries or is absent", () => {
   for (const phase of ["connecting", "error", undefined, null]) assert.equal(takesKeys(true, phase), false, String(phase));
+});
+
+const missing = (tools = {}, os = "Darwin") => ({ at: 5, os, sessions: [], error: null, tools: { agentBrowser: false, brew: true, npm: false, node: null, ...tools } });
+
+test("panelState shows agent-browser missing, with its Homebrew route, instead of the start control", () => {
+  assert.deepEqual(panelState({ target: remote, scan: missing() }), {
+    kind: "missing", session: "herdr-t6", machine: "build_box", address: "build_box/t6", via: "brew",
+    plan: "brew install agent-browser && agent-browser install", command: "brew install agent-browser && agent-browser install", error: null, hint: null, ifSudo: null,
+  });
+});
+
+test("panelState keeps the start control when the scan found agent-browser or did not say", () => {
+  assert.equal(panelState({ target: remote, scan: { ...missing(), tools: { agentBrowser: true } } }).kind, "start");
+  assert.equal(panelState({ target: remote, scan: { ...missing(), tools: { agentBrowser: null } } }).kind, "start");
+  assert.equal(panelState({ target: remote, scan: { ...missing(), tools: null } }).kind, "start");
+});
+
+test("panelState shows a running session even when the scan says agent-browser is missing", () => {
+  assert.equal(panelState({ target: remote, scan: { ...missing(), sessions: [running] } }).kind, "running");
+});
+
+test("panelState gives no install route and names the reason and the command when the machine lacks one", () => {
+  const state = panelState({ target: remote, scan: missing({ brew: false, npm: true, node: "18.0.0" }, "Linux") });
+  assert.equal(state.kind, "missing");
+  assert.equal(state.via, null);
+  assert.match(state.error, /Node\.js 18\.0\.0 is older than the 22/);
+  assert.equal(state.command, "npm install -g agent-browser && agent-browser install --with-deps");
+});
+
+test("panelState shows the install's step while it runs, before the scan answers and over a failed scan", () => {
+  const install = { status: "installing", via: "npm", step: 2, of: 2, label: "agent-browser install" };
+  const expected = { kind: "installing", session: "herdr-t6", machine: "build_box", address: "build_box/t6", via: "npm", step: 2, of: 2, label: "agent-browser install" };
+  assert.deepEqual(panelState({ target: remote, scan: undefined, install }), expected);
+  assert.deepEqual(panelState({ target: remote, scan: { ...missing(), error: "down" }, install }), expected);
+  assert.deepEqual(panelState({ target: remote, scan: { ...missing(), tools: { agentBrowser: true } }, install }), expected);
+});
+
+test("panelState carries a failed install's error and hand command back to the missing state", () => {
+  const install = { status: "failed", stage: "package", error: "brew install agent-browser failed: offline", command: "brew install agent-browser && agent-browser install" };
+  const state = panelState({ target: remote, scan: missing(), install });
+  assert.equal(state.kind, "missing");
+  assert.equal(state.via, "brew");
+  assert.equal(state.error, install.error);
+  assert.equal(state.command, install.command);
+});
+
+test("panelState says so when an install finished but agent-browser is still not found", () => {
+  const state = panelState({ target: remote, scan: missing(), install: { status: "installed" } });
+  assert.equal(state.kind, "missing");
+  assert.match(state.error, /PATH still does not find agent-browser/);
+});
+
+test("panelState offers start with the browser download's error and command when only that step failed", () => {
+  const install = { status: "failed", stage: "browser", error: "agent-browser install failed: disk full", command: "agent-browser install" };
+  const scan = { ...missing(), tools: { agentBrowser: true } };
+  const state = panelState({ target: remote, scan, install });
+  assert.equal(state.kind, "start");
+  assert.equal(state.error, install.error);
+  assert.equal(state.command, "agent-browser install");
+  const after = panelState({ target: remote, scan, install, start: { status: "failed", error: "no chrome" } });
+  assert.equal(after.error, "no chrome");
+  assert.equal(after.command, null);
+});
+
+test("panelState looks again instead of offering an install from a scan older than the focus change", () => {
+  assert.equal(panelState({ target: { ...remote, since: 6 }, scan: missing() }).kind, "looking");
+});
+
+test("panelState shows the libraries hint for a non-root Linux user, before and after the install", () => {
+  const scan = missing({ root: false }, "Linux");
+  const before = panelState({ target: remote, scan });
+  assert.equal(before.kind, "missing");
+  assert.equal(before.plan, "brew install agent-browser && agent-browser install");
+  assert.equal(before.hint, "agent-browser install --with-deps");
+  const found = { ...scan, tools: { agentBrowser: true } };
+  const install = { status: "installed", hint: "agent-browser install --with-deps" };
+  assert.equal(panelState({ target: remote, scan: found, install }).hint, "agent-browser install --with-deps");
+  assert.equal(panelState({ target: remote, scan: found, install, start: { status: "failed", error: "x" } }).hint, null);
+});
+
+test("panelState plans the libraries step and gives no hint for root on Linux", () => {
+  const state = panelState({ target: remote, scan: missing({ root: true }, "Linux") });
+  assert.equal(state.plan, "brew install agent-browser && agent-browser install --with-deps");
+  assert.equal(state.hint, null);
+});
+
+test("panelState names the sudo-only libraries step before the click for a non-root Linux user", () => {
+  assert.equal(panelState({ target: remote, scan: missing({ root: false }, "Linux") }).ifSudo, "agent-browser install --with-deps");
+  assert.equal(panelState({ target: remote, scan: missing({}, "Linux") }).ifSudo, "agent-browser install --with-deps");
+});
+
+test("panelState names no sudo-only step for root, outside Linux, or without an install route", () => {
+  assert.equal(panelState({ target: remote, scan: missing({ root: true }, "Linux") }).ifSudo, null);
+  assert.equal(panelState({ target: remote, scan: missing({ root: false }, "Darwin") }).ifSudo, null);
+  assert.equal(panelState({ target: remote, scan: missing({ brew: false, npm: false }, "Linux") }).ifSudo, null);
 });

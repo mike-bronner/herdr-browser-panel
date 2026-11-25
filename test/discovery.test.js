@@ -1,7 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, symlinkSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DISCOVER, parseDiscovery, brief } from "../mods/browser/discovery.js";
@@ -87,7 +87,69 @@ test("parseDiscovery keeps a session whose target file is not JSON", () => {
 
 test("parseDiscovery skips unreadable lines and rows without a session", () => {
   assert.deepEqual(parseDiscovery("garbage\n{\"pid\":3}\n\n").sessions, []);
-  assert.deepEqual(parseDiscovery(undefined), { os: null, sessions: [] });
+  assert.deepEqual(parseDiscovery(undefined), { os: null, tools: null, sessions: [] });
+});
+
+const NEEDED = ["uname", "head", "tr", "cat", "id"];
+const real = Object.fromEntries(NEEDED.map((bin) => [bin, execFileSync("/bin/sh", ["-c", `command -v ${bin}`], { encoding: "utf8" }).trim()]));
+
+function toolsWith(name, stubs) {
+  const dir = join(root, name);
+  mkdirSync(dir);
+  for (const bin of NEEDED) if (!(bin in stubs)) symlinkSync(real[bin], join(dir, bin));
+  for (const [bin, body] of Object.entries(stubs)) {
+    writeFileSync(join(dir, bin), `#!/bin/sh\n${body}\n`);
+    chmodSync(join(dir, bin), 0o755);
+  }
+  const out = execFileSync("/bin/sh", ["-c", DISCOVER], { env: { PATH: dir, HOME: join(root, "nohome"), TMPDIR: join(root, "notmp") }, encoding: "utf8" });
+  return parseDiscovery(out);
+}
+
+const NONE = { agentBrowser: false, brew: false, npm: false, node: null, root: false };
+const SUDO_MARK = join(root, "sudo-called");
+const SUDO = `echo called >> "${SUDO_MARK}"\nexit 0`;
+
+test("DISCOVER reports agent-browser found and checks nothing else", () => {
+  assert.deepEqual(toolsWith("found", { "agent-browser": "echo 0.44.0", brew: "exit 0", uname: "echo Linux", id: "echo 0" }).tools,
+    { agentBrowser: true, brew: false, npm: false, node: null, root: false });
+});
+
+test("DISCOVER reports agent-browser missing with Homebrew, npm and the node version", () => {
+  const { os, tools } = toolsWith("routes", { brew: "exit 0", npm: "exit 0", node: "echo v22.3.0" });
+  assert.equal(os, execFileSync("uname", ["-s"], { encoding: "utf8" }).trim());
+  assert.deepEqual(tools, { ...NONE, brew: true, npm: true, node: "22.3.0" });
+});
+
+test("DISCOVER reports agent-browser missing with no install tools", () => {
+  assert.deepEqual(toolsWith("bare", {}).tools, NONE);
+});
+
+test("DISCOVER reports root on Linux when the user id is 0", () => {
+  assert.equal(toolsWith("root", { uname: "echo Linux", id: "echo 0" }).tools.root, true);
+});
+
+test("DISCOVER reports no root on Linux for another user id", () => {
+  assert.deepEqual(toolsWith("user", { uname: "echo Linux", id: "echo 1000" }), { os: "Linux", tools: NONE, sessions: [] });
+});
+
+test("DISCOVER reports no root outside Linux", () => {
+  assert.equal(toolsWith("mac", { uname: "echo Darwin", id: "echo 0" }).tools.root, false);
+});
+
+test("DISCOVER never calls sudo, even on Linux for a user who could use it", () => {
+  rmSync(SUDO_MARK, { force: true });
+  for (const [name, id] of [["sudo-user", "echo 1000"], ["sudo-root", "echo 0"]]) {
+    const { tools } = toolsWith(name, { uname: "echo Linux", id, sudo: SUDO });
+    assert.equal(tools.agentBrowser, false);
+  }
+  assert.equal(existsSync(SUDO_MARK), false);
+  execFileSync(join(root, "sudo-user", "sudo"));
+  assert.equal(existsSync(SUDO_MARK), true);
+});
+
+test("parseDiscovery fails closed on tool fields of the wrong type", () => {
+  const { tools } = parseDiscovery('{"os":"Linux","agentBrowser":"no","brew":"true","npm":1,"node":7,"root":"true"}');
+  assert.deepEqual(tools, { agentBrowser: null, brew: false, npm: false, node: null, root: false });
 });
 
 test("brief drops credentials, query and fragment from an address", () => {

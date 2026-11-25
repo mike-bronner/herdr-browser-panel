@@ -2,6 +2,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, focused, spaces, theme, window, layout, checking } from "herdr";
 import { DISCOVER, parseDiscovery, brief } from "./discovery.js";
+import { installPlan, needsSudoCheck, installStep, installFailure, installDone, outputTail, settledInstall } from "./install.js";
 import { follow, targetKey, panelState, settledStart, blockShown, machineLabel, startArgs, streamArgs, feedKey, takesKeys } from "./panel.js";
 import { slug, normalizeUrl, mouseMessage, wheelMessage, keyMessages, textMessages, followUrl } from "./page.js";
 import { connector } from "./connect.js";
@@ -12,6 +13,9 @@ const SCAN_MS = 4000;
 const FPS = 15;
 const KEEP_MS = 2 * 60 * 1000;
 const SWEEP_MS = 6 * 60 * 1000;
+const INSTALL_MS = 10 * 60 * 1000;
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const INSTALLER = { brew: "Homebrew", npm: "npm" };
 const reason = (e) => String(e?.message ?? e ?? "failed").replace(/^Error: /, "");
 const machineKey = (machine) => machine ?? "";
 const shown = () => window()?.visible !== false && blockShown(layout(), "browser") !== false;
@@ -20,15 +24,22 @@ async function discover(machine) {
   const at = Date.now();
   try {
     const r = await exec("sh", ["-c", DISCOVER], { on: machine, timeout: 10000 });
-    const { os, sessions } = parseDiscovery(r.stdout);
-    return { at, os, sessions, error: r.code !== 0 && !sessions.length ? r.stderr.trim() || `exit ${r.code}` : null };
+    const { os, tools, sessions } = parseDiscovery(r.stdout);
+    return { at, os, tools, sessions, error: r.code !== 0 && !sessions.length ? r.stderr.trim() || `exit ${r.code}` : null };
   } catch (e) {
-    return { at, os: null, sessions: [], error: reason(e) };
+    return { at, os: null, tools: null, sessions: [], error: reason(e) };
   }
 }
 
 function note(t, text, color = t.dim) {
   return div().text_size(12).text_color(color).child(text);
+}
+
+function button(t, id, label, onClick) {
+  return h_flex().id(id).h(28).px(12).flex_none().self_start().items_center().rounded(6).cursor_pointer()
+    .bg(t.solid).text_color(t.solid_foreground).hover((s) => s.opacity(0.9))
+    .on_click((_e, cx) => onClick(cx))
+    .child(label);
 }
 
 function control(t, id, label, tip, onClick) {
@@ -45,6 +56,7 @@ export default class Browser extends View {
     this.scans = new Map();
     this.scanning = new Map();
     this.starts = new Map();
+    this.installs = new Map();
     this.streamErrors = new Map();
     this.feed = null;
     this.feedKey = null;
@@ -94,6 +106,7 @@ export default class Browser extends View {
     const key = targetKey(target);
     if (this.starts.get(key)?.status === "starting") return;
     this.starts.set(key, { status: "starting" });
+    if (this.installs.get(machineKey(target.machine))?.status !== "installing") this.installs.delete(machineKey(target.machine));
     this.streamErrors.delete(key);
     cx.notify();
     cx.spawn(async (cx) => {
@@ -114,6 +127,36 @@ export default class Browser extends View {
       }
       this.keep(machineKey(target.machine), await discover(target.machine));
       this.starts.set(key, result);
+      cx.notify();
+    });
+  }
+
+  install(target, cx) {
+    const key = machineKey(target.machine);
+    if (this.installs.get(key)?.status === "installing") return;
+    const scan = this.scans.get(key);
+    if (scan?.tools?.agentBrowser !== false) return;
+    const offered = installPlan(scan.os, scan.tools);
+    if (!offered.via) return;
+    this.installs.set(key, installStep(offered, 0));
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const sudo = needsSudoCheck(scan.os, scan.tools) && await exec("sudo", ["-n", "true"], { on: target.machine, timeout: 10000 }).then((r) => r.code === 0, () => false);
+      const plan = installPlan(scan.os, scan.tools, sudo);
+      let result = installDone(plan);
+      for (const [step, [command, args]] of plan.steps.entries()) {
+        this.installs.set(key, installStep(plan, step));
+        cx.notify();
+        try {
+          const r = await exec(command, args, { on: target.machine, timeout: INSTALL_MS });
+          if (r.code !== 0) { result = installFailure(plan, step, outputTail(r)); break; }
+        } catch (e) {
+          result = installFailure(plan, step, reason(e));
+          break;
+        }
+      }
+      this.keep(key, await discover(target.machine));
+      this.installs.set(key, result);
       cx.notify();
     });
   }
@@ -250,6 +293,22 @@ export default class Browser extends View {
       .child(this.screen(t, state));
   }
 
+  manual(t, id, intro, command) {
+    return v_flex().gap(6)
+      .child(note(t, intro))
+      .child(h_flex().gap(6).items_center()
+        .child(div().flex_1().min_w(0).px(8).py(4).rounded(6).bg(t.surface).text_size(12).child(command))
+        .child(control(t, id, "Copy", "Copy the command", (cx) => cx.write_to_clipboard(command))));
+  }
+
+  handCommand(t, state) {
+    return this.manual(t, "browser-copy-install", `To install it by hand, run this on ${machineLabel(state.machine)}:`, state.command);
+  }
+
+  depsHint(t, state) {
+    return this.manual(t, "browser-copy-deps", `On Linux the browser may also need system libraries, and installing them may need sudo. If the browser does not start, run this on ${machineLabel(state.machine)}:`, state.hint);
+  }
+
   body(t, state) {
     const target = this.target;
     const where = state.session ? `${state.session} on ${machineLabel(state.machine)}` : "";
@@ -264,15 +323,31 @@ export default class Browser extends View {
         return v_flex().gap(6).child(note(t, `Cannot check ${machineLabel(state.machine)} for ${state.session}.`, t.blocked)).child(note(t, state.error));
       case "starting":
         return note(t, `Starting ${where}…`);
+      case "installing":
+        return v_flex().gap(10)
+          .child(h_flex().gap(8).items_center()
+            .child(div().w(14).text_color(t.dim).frames(SPINNER, 90))
+            .child(div().child(`Installing agent-browser on ${machineLabel(state.machine)} with ${INSTALLER[state.via]}…`)))
+          .child(note(t, `Step ${state.step} of ${state.of}: ${state.label}`))
+          .child(note(t, "This can take several minutes. The panel cannot show the download itself, so each step stays here until it finishes."));
+      case "missing":
+        return v_flex().gap(10)
+          .child(div().child(`agent-browser is not installed on ${machineLabel(state.machine)}.`))
+          .child(note(t, where))
+          .when(Boolean(state.via), (el) => el
+            .child(button(t, "browser-install", "Install agent-browser", (cx) => this.install(target, cx)))
+            .child(note(t, `Runs ${state.plan} with ${INSTALLER[state.via]}. It installs the agent-browser command and downloads Chrome for Testing.${state.ifSudo ? ` If sudo works here without a password, it also installs the browser's system libraries with ${state.ifSudo}.` : ""}`)))
+          .when(Boolean(state.error), (el) => el.child(note(t, state.error, t.blocked)))
+          .when(!state.via || Boolean(state.error), (el) => el.child(this.handCommand(t, state)))
+          .when(Boolean(state.hint), (el) => el.child(this.depsHint(t, state)));
       case "start":
         return v_flex().gap(10)
           .child(div().child("No browser for this terminal yet."))
           .child(note(t, where))
-          .child(h_flex().id("browser-start").h(28).px(12).flex_none().self_start().items_center().rounded(6).cursor_pointer()
-            .bg(t.solid).text_color(t.solid_foreground).hover((s) => s.opacity(0.9))
-            .on_click((_e, cx) => this.start(target, cx))
-            .child("Start browser"))
-          .when(Boolean(state.error), (el) => el.child(note(t, state.error, t.blocked)));
+          .child(button(t, "browser-start", "Start browser", (cx) => this.start(target, cx)))
+          .when(Boolean(state.error), (el) => el.child(note(t, state.error, t.blocked)))
+          .when(Boolean(state.command), (el) => el.child(this.handCommand(t, state)))
+          .when(Boolean(state.hint), (el) => el.child(this.depsHint(t, state)));
       case "running":
         return v_flex().flex_1().min_h(0).gap(10)
           .child(v_flex().gap(2)
@@ -291,8 +366,10 @@ export default class Browser extends View {
     this.target = next;
     this.visible = visible;
     const target = this.target, key = targetKey(target);
-    const state = panelState({ target, scan: this.scans.get(machineKey(target?.machine)), start: this.starts.get(key) });
+    const install = this.installs.get(machineKey(target?.machine));
+    const state = panelState({ target, scan: this.scans.get(machineKey(target?.machine)), start: this.starts.get(key), install });
     if (!settledStart(state, this.starts.get(key))) this.starts.delete(key);
+    if (!settledInstall(state, install)) this.installs.delete(machineKey(target?.machine));
     this.sync(state, visible, cx);
     this.keysShown = this.takesKeys();
     const t = theme();
