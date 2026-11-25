@@ -1,9 +1,10 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, focused, spaces, theme, window, layout, checking } from "herdr";
+import { exec, focused, spaces, panes, theme, window, layout, checking } from "herdr";
 import { DISCOVER, parseDiscovery, brief } from "./discovery.js";
 import { installPlan, needsSudoCheck, installStep, installFailure, installDone, outputTail, settledInstall } from "./install.js";
-import { follow, targetKey, panelState, settledStart, blockShown, machineLabel, startArgs, streamArgs, feedKey, takesKeys } from "./panel.js";
+import { follow, targetKey, panelState, settledStart, blockShown, machineLabel, startArgs, streamArgs, feedKey, takesKeys, findSession, terminalFolder, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
+import { DETECT, parseDetection, herdArgs, parseHerdSites, pickAddress, recall, remember, readMemory } from "./address.js";
 import { slug, normalizeUrl, mouseMessage, wheelMessage, keyMessages, textMessages, followUrl } from "./page.js";
 import { connector } from "./connect.js";
 import { Feed } from "./stream.js";
@@ -14,6 +15,8 @@ const FPS = 15;
 const KEEP_MS = 2 * 60 * 1000;
 const SWEEP_MS = 6 * 60 * 1000;
 const INSTALL_MS = 10 * 60 * 1000;
+const DETECT_MS = 15000;
+const MEMORY_KEY = "lastUrls";
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const INSTALLER = { brew: "Homebrew", npm: "npm" };
 const reason = (e) => String(e?.message ?? e ?? "failed").replace(/^Error: /, "");
@@ -58,6 +61,10 @@ export default class Browser extends View {
     this.starts = new Map();
     this.installs = new Map();
     this.streamErrors = new Map();
+    this.sessionFolders = new Map();
+    this.runs = new Map();
+    this.folder = null;
+    this.memory = readMemory(globalThis.localStorage?.getItem(MEMORY_KEY));
     this.feed = null;
     this.feedKey = null;
     this.shownAt = null;
@@ -94,7 +101,7 @@ export default class Browser extends View {
     this.scanning.set(key, at);
     cx.spawn(async (cx) => {
       try { this.keep(key, await discover(target.machine)); }
-      finally { if (this.scanning.get(key) === at) this.scanning.delete(key); cx.notify(); }
+      finally { if (this.scanning.get(key) === at) this.scanning.delete(key); this.settle(cx); cx.notify(); }
     });
   }
 
@@ -102,22 +109,71 @@ export default class Browser extends View {
     if (!(this.scans.get(key)?.at > scan.at)) this.scans.set(key, scan);
   }
 
-  start(target, cx) {
+  current() {
+    const target = this.target;
+    return panelState({ target, scan: this.scans.get(machineKey(target?.machine)), start: this.starts.get(targetKey(target)), install: this.installs.get(machineKey(target?.machine)) });
+  }
+
+  settle(cx) {
+    const target = this.target;
+    if (!target || checking()) return;
+    const state = this.current(), key = targetKey(target);
+    if (!settledStart(state, this.starts.get(key))) this.starts.delete(key);
+    const run = trackRun(this.runs.get(key), state, Date.now());
+    if (run) this.runs.set(key, run);
+    else this.runs.delete(key);
+    const folder = sessionFolder(this.sessionFolders.get(key), state, this.folder);
+    if (folder) this.sessionFolders.set(key, folder);
+    else this.sessionFolders.delete(key);
+    if (state.kind === "running" && state.url) {
+      const next = remember(this.memory, target.machine, folder, state.url, Date.now());
+      if (next) {
+        this.memory = next;
+        globalThis.localStorage?.setItem(MEMORY_KEY, JSON.stringify(next));
+      }
+    }
+    if (autoStart(state, { visible: shown(), shownAt: this.shownAt, start: this.starts.get(key), run })) this.start(target, cx, true);
+  }
+
+  async detectAddress(target, folder) {
+    const on = { on: target.machine, timeout: DETECT_MS };
+    let detected = {}, sites = null;
+    if (folder) {
+      try { detected = parseDetection((await exec("sh", ["-c", DETECT, "sh", folder], on)).stdout); } catch {}
+    }
+    if (detected.herd) {
+      try { sites = parseHerdSites((await exec("sh", herdArgs(detected.herd), on)).stdout); } catch {}
+    }
+    return pickAddress({ detected, sites, last: recall(this.memory, target.machine, folder) });
+  }
+
+  start(target, cx, auto = false) {
     const key = targetKey(target);
     if (this.starts.get(key)?.status === "starting") return;
+    const folder = this.target === target ? this.folder : null;
+    this.sessionFolders.set(key, folder);
+    this.runs.delete(key);
     this.starts.set(key, { status: "starting" });
     if (this.installs.get(machineKey(target.machine))?.status !== "installing") this.installs.delete(machineKey(target.machine));
     this.streamErrors.delete(key);
     cx.notify();
     cx.spawn(async (cx) => {
-      let result;
+      let result, opened = true;
       try {
-        const r = await exec("agent-browser", startArgs(target.session), { on: target.machine, timeout: 60000 });
-        result = r.code === 0 ? { status: "started" } : { status: "failed", error: r.stderr.trim() || r.stdout.trim() || `exit ${r.code}` };
+        const url = await this.detectAddress(target, folder);
+        const before = await discover(target.machine);
+        this.keep(machineKey(target.machine), before);
+        if (findSession(before.sessions, target.session)) {
+          result = { status: "started" };
+          opened = false;
+        } else {
+          const r = await exec("agent-browser", startArgs(target.session, url), { on: target.machine, timeout: 60000 });
+          result = r.code === 0 ? { status: "started" } : { status: "failed", error: r.stderr.trim() || r.stdout.trim() || `exit ${r.code}` };
+        }
       } catch (e) {
         result = { status: "failed", error: `agent-browser could not run on ${machineLabel(target.machine)}: ${reason(e)}` };
       }
-      if (result.status === "started") {
+      if (result.status === "started" && opened) {
         try {
           const s = await exec("agent-browser", streamArgs(target.session), { on: target.machine, timeout: 30000 });
           if (s.code !== 0) this.streamErrors.set(key, s.stderr.trim() || s.stdout.trim() || `exit ${s.code}`);
@@ -126,6 +182,7 @@ export default class Browser extends View {
         }
       }
       this.keep(machineKey(target.machine), await discover(target.machine));
+      if (auto && opened && result.status === "started") this.runs.set(key, { at: Date.now() });
       this.starts.set(key, result);
       cx.notify();
     });
@@ -220,12 +277,8 @@ export default class Browser extends View {
 
   screen(t, state) {
     const feed = this.feed;
-    const message = !state.port
-      ? `This session has no live view.${this.streamErrors.has(targetKey(this.target)) ? ` ${this.streamErrors.get(targetKey(this.target))}` : ""}`
-      : !feed ? "Connecting…"
-      : feed.phase === "error" ? `Cannot reach the live view: ${feed.error ?? "disconnected"}`
-      : feed.frames.empty ? (feed.phase === "live" ? "Waiting for the page to paint…" : "Connecting…")
-      : null;
+    const key = targetKey(this.target);
+    const message = screenText({ port: state.port, streamError: this.streamErrors.get(key) ?? null, feed: feed && { phase: feed.phase, error: feed.error, empty: feed.frames.empty } });
     return div().id("browser-screen").relative().flex_1().min_h(0).rounded(8).overflow_hidden().bg(t.surface)
       .track_focus(this.h)
       .children(feed ? feed.frames.view() : [])
@@ -359,15 +412,17 @@ export default class Browser extends View {
   }
 
   render(cx) {
-    const next = follow(this.target, focused(), spaces(), Date.now());
+    const focus = focused();
+    const next = follow(this.target, focus, spaces(), Date.now());
     const visible = !checking() && shown();
     if (visible && !this.visible) this.shownAt = Date.now();
     if (visible && (next !== this.target || !this.visible)) this.scan(cx, next);
     this.target = next;
+    this.folder = terminalFolder(next, focus, panes());
     this.visible = visible;
     const target = this.target, key = targetKey(target);
     const install = this.installs.get(machineKey(target?.machine));
-    const state = panelState({ target, scan: this.scans.get(machineKey(target?.machine)), start: this.starts.get(key), install });
+    const state = this.current();
     if (!settledStart(state, this.starts.get(key))) this.starts.delete(key);
     if (!settledInstall(state, install)) this.installs.delete(machineKey(target?.machine));
     this.sync(state, visible, cx);

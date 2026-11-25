@@ -1,4 +1,5 @@
 import { installPlan } from "./install.js";
+import { openable } from "./address.js";
 
 export function sessionName(terminalId) {
   return typeof terminalId === "string" && /^[A-Za-z0-9_-]+$/.test(terminalId) ? `herdr-${terminalId}` : null;
@@ -40,8 +41,10 @@ function checked(session) {
   return session;
 }
 
-export function startArgs(session) {
-  return ["--session", checked(session), "open", "about:blank"];
+export function startArgs(session, url = "about:blank") {
+  const page = url === "about:blank" ? url : openable(url);
+  if (!page) throw new Error(`not an address to open: ${url}`);
+  return ["--session", checked(session), "open", page];
 }
 
 export function streamArgs(session) {
@@ -74,7 +77,7 @@ export function panelState({ target, scan, start, install }) {
   const error = start?.status === "failed" ? start.error
     : start?.status === "started" ? `agent-browser started, but no session named ${target.session} showed up`
     : failed?.error ?? null;
-  return { kind: "start", ...where, error, command: start ? null : failed?.command ?? null, hint: !start && install?.status === "installed" ? install.hint ?? null : null };
+  return { kind: "start", ...where, at: fresh.at, error, command: start ? null : failed?.command ?? null, hint: !start && install?.status === "installed" ? install.hint ?? null : null };
 }
 
 export function settledStart(state, start) {
@@ -99,4 +102,39 @@ export function blockShown(root, mod) {
 
 export function takesKeys(focused, phase) {
   return Boolean(focused) && phase === "live";
+}
+
+export function terminalFolder(target, focus, panes) {
+  if (!target) return null;
+  const cwd = focus?.terminal === target.address ? focus.cwd : panes?.find((p) => p.terminal === target.address)?.cwd;
+  return typeof cwd === "string" && cwd ? cwd : null;
+}
+
+const QUICK_END_MS = 30000;
+
+export function endedQuickly(run) {
+  return run?.endedAt != null && run.endedAt - run.at < QUICK_END_MS;
+}
+
+export function autoStart(state, { visible, shownAt, start, run }) {
+  return Boolean(visible) && state?.kind === "start" && !state.error && !start && state.at >= shownAt && !endedQuickly(run);
+}
+
+export function trackRun(run, state, now) {
+  if (!run) return null;
+  if (state?.kind === "running") return run.endedAt == null ? run : null;
+  return state?.kind === "start" && run.endedAt == null ? { ...run, endedAt: now } : run;
+}
+
+export function sessionFolder(held, state, folder) {
+  if (state?.kind === "running") return held ?? folder ?? null;
+  return state?.kind === "start" ? null : held ?? null;
+}
+
+export function screenText({ port, streamError, feed }) {
+  if (!port) return `This session has no live view.${streamError ? ` ${streamError}` : ""}`;
+  if (!feed) return "Connecting…";
+  if (feed.phase === "error") return `Cannot reach the live view: ${feed.error ?? "disconnected"}`;
+  if (feed.empty) return feed.phase === "live" ? "Waiting for the page to paint…" : "Connecting…";
+  return null;
 }

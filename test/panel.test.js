@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startArgs, streamArgs, feedKey, takesKeys, panelState, settledStart, blockShown } from "../mods/browser/panel.js";
+import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startArgs, streamArgs, feedKey, takesKeys, panelState, settledStart, blockShown, terminalFolder, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
 
 const SPACES = [{ id: "sp-local", machine: null }, { id: "sp-remote", machine: "build_box" }];
 
@@ -106,6 +106,16 @@ test("findSession matches the exact name outside any namespace", () => {
 
 test("startArgs opens a blank page in the named session", () => {
   assert.deepEqual(startArgs("herdr-t1b"), ["--session", "herdr-t1b", "open", "about:blank"]);
+  assert.deepEqual(startArgs("herdr-t1b", "about:blank"), ["--session", "herdr-t1b", "open", "about:blank"]);
+});
+
+test("startArgs opens a detected http or https address as one argument", () => {
+  assert.deepEqual(startArgs("herdr-t1b", "https://shop.test"), ["--session", "herdr-t1b", "open", "https://shop.test/"]);
+  assert.deepEqual(startArgs("herdr-t1b", "http://127.0.0.1:3000"), ["--session", "herdr-t1b", "open", "http://127.0.0.1:3000/"]);
+});
+
+test("startArgs refuses an address that is not http, https or the blank page", () => {
+  for (const url of ["javascript:alert(1)", "file:///etc/passwd", "--help", "shop.test", "about:config", null]) assert.throws(() => startArgs("herdr-t1b", url), /not an address to open/, String(url));
 });
 
 test("startArgs refuses any name that is not a terminal session name", () => {
@@ -179,8 +189,8 @@ test("panelState shows running even while a start is still pending", () => {
 
 test("panelState offers the start control when the machine answered with no session", () => {
   const other = { ...running, session: "herdr-t7" };
-  assert.deepEqual(panelState({ target: remote, scan: { sessions: [other], error: null } }),
-    { kind: "start", session: "herdr-t6", machine: "build_box", address: "build_box/t6", error: null, command: null, hint: null });
+  assert.deepEqual(panelState({ target: remote, scan: { at: 9, sessions: [other], error: null } }),
+    { kind: "start", session: "herdr-t6", machine: "build_box", address: "build_box/t6", at: 9, error: null, command: null, hint: null });
 });
 
 test("panelState withholds the start control when the machine could not be asked", () => {
@@ -382,4 +392,149 @@ test("panelState names no sudo-only step for root, outside Linux, or without an 
   assert.equal(panelState({ target: remote, scan: missing({ root: true }, "Linux") }).ifSudo, null);
   assert.equal(panelState({ target: remote, scan: missing({ root: false }, "Darwin") }).ifSudo, null);
   assert.equal(panelState({ target: remote, scan: missing({ brew: false, npm: false }, "Linux") }).ifSudo, null);
+});
+
+test("terminalFolder reads the focused terminal's live folder", () => {
+  assert.equal(terminalFolder(remote, { terminal: "build_box/t6", cwd: "/srv/shop" }, []), "/srv/shop");
+});
+
+test("terminalFolder reads the pane's folder when focus has moved off the terminal", () => {
+  const panes = [{ terminal: "t1", cwd: "/a" }, { terminal: "build_box/t6", cwd: "/srv/shop/app" }];
+  assert.equal(terminalFolder(remote, { terminal: null, cwd: null }, panes), "/srv/shop/app");
+  assert.equal(terminalFolder(remote, null, panes), "/srv/shop/app");
+});
+
+test("terminalFolder is null with no target or no folder known", () => {
+  assert.equal(terminalFolder(null, { terminal: "t1", cwd: "/a" }, []), null);
+  assert.equal(terminalFolder(remote, { terminal: "build_box/t6", cwd: "" }, []), null);
+  assert.equal(terminalFolder(remote, { terminal: "t1", cwd: "/a" }, [{ terminal: "t1", cwd: "/a" }]), null);
+  assert.equal(terminalFolder(remote, null, undefined), null);
+});
+
+const startState = (extra = {}) => panelState({ target: remote, scan: { at: 10, sessions: [], tools: { agentBrowser: true }, error: null }, ...extra });
+const ready = (extra = {}) => ({ visible: true, shownAt: 5, start: undefined, ...extra });
+
+test("autoStart starts a shown terminal with no session once a fresh scan says so", () => {
+  assert.equal(startState().kind, "start");
+  assert.equal(autoStart(startState(), ready()), true);
+  assert.equal(autoStart(startState(), ready({ shownAt: 10 })), true);
+});
+
+test("autoStart restarts a terminal whose session ended, whoever started it", () => {
+  const runningState = panelState({ target: remote, scan: { at: 10, sessions: [running] } });
+  assert.equal(runningState.kind, "running");
+  assert.equal(settledStart(runningState, { status: "started" }), null);
+  const ended = panelState({ target: remote, scan: { at: 20, sessions: [], tools: { agentBrowser: true }, error: null }, start: undefined });
+  assert.equal(ended.kind, "start");
+  assert.equal(autoStart(ended, ready()), true);
+});
+
+test("autoStart does not restart after a failed start, so the Start button shows instead", () => {
+  const failed = { status: "failed", error: "no chrome" };
+  const state = startState({ start: failed });
+  assert.equal(state.kind, "start");
+  assert.equal(state.error, "no chrome");
+  assert.equal(autoStart(state, ready({ start: failed })), false);
+  const quiet = { status: "started" };
+  assert.equal(startState({ start: quiet }).error, "agent-browser started, but no session named herdr-t6 showed up");
+  assert.equal(autoStart(startState({ start: quiet }), ready({ start: quiet })), false);
+});
+
+test("autoStart does nothing while the panel is hidden or from a scan older than the show", () => {
+  assert.equal(autoStart(startState(), ready({ visible: false })), false);
+  assert.equal(autoStart(startState(), ready({ shownAt: 11 })), false);
+});
+
+test("autoStart leaves a running, missing, unreachable or still-looking terminal alone", () => {
+  assert.equal(autoStart(panelState({ target: remote, scan: { at: 10, sessions: [running] } }), ready()), false);
+  assert.equal(autoStart(panelState({ target: remote, scan: { at: 10, os: "Darwin", sessions: [], tools: { agentBrowser: false, brew: true, npm: false, node: null, root: false } } }), ready()), false);
+  assert.equal(autoStart(panelState({ target: remote, scan: { at: 10, sessions: [], error: "down" } }), ready()), false);
+  assert.equal(autoStart(panelState({ target: remote, scan: undefined }), ready()), false);
+  assert.equal(autoStart(panelState({ target: null }), ready()), false);
+});
+
+test("autoStart waits for a click after a start or an install step failed", () => {
+  const failedStart = { status: "failed", error: "no chrome" };
+  assert.equal(autoStart(startState({ start: failedStart }), ready({ start: failedStart })), false);
+  const install = { status: "failed", step: 1, error: "download failed", command: "npx agent-browser install" };
+  const state = startState({ install });
+  assert.equal(state.kind, "start");
+  assert.equal(autoStart(state, ready()), false);
+});
+
+test("autoStart does not start again while a start result is still held", () => {
+  assert.equal(autoStart(startState(), ready({ start: { status: "started" } })), false);
+});
+
+test("screenText says the session has no live view, with the stream error when there is one", () => {
+  assert.equal(screenText({ port: null, streamError: null, feed: null }), "This session has no live view.");
+  assert.equal(screenText({ port: null, streamError: "stream refused", feed: { phase: "live", empty: false } }), "This session has no live view. stream refused");
+});
+
+test("screenText says connecting until a feed exists or while it connects with no picture", () => {
+  assert.equal(screenText({ port: 4321, feed: null }), "Connecting…");
+  assert.equal(screenText({ port: 4321, feed: { phase: "connecting", error: null, empty: true } }), "Connecting…");
+});
+
+test("screenText gives the feed's error, or disconnected when it has none", () => {
+  assert.equal(screenText({ port: 4321, feed: { phase: "error", error: "connection refused", empty: true } }), "Cannot reach the live view: connection refused");
+  assert.equal(screenText({ port: 4321, feed: { phase: "error", error: null, empty: false } }), "Cannot reach the live view: disconnected");
+});
+
+test("screenText waits for paint on a live feed with no picture, and shows nothing over a picture", () => {
+  assert.equal(screenText({ port: 4321, feed: { phase: "live", error: null, empty: true } }), "Waiting for the page to paint…");
+  assert.equal(screenText({ port: 4321, feed: { phase: "live", error: null, empty: false } }), null);
+  assert.equal(screenText({ port: 4321, feed: { phase: "connecting", error: null, empty: false } }), null);
+});
+
+test("sessionFolder records the folder when a session is first seen and keeps it after the terminal moves", () => {
+  const run = panelState({ target: remote, scan: { at: 10, sessions: [running] } });
+  const first = sessionFolder(undefined, run, "/srv/a");
+  assert.equal(first, "/srv/a");
+  assert.equal(sessionFolder(first, run, "/srv/b"), "/srv/a");
+});
+
+test("sessionFolder keeps the folder a start recorded while the session starts or is looked for", () => {
+  assert.equal(sessionFolder("/srv/a", { kind: "starting" }, "/srv/b"), "/srv/a");
+  assert.equal(sessionFolder("/srv/a", { kind: "looking" }, "/srv/b"), "/srv/a");
+  assert.equal(sessionFolder(undefined, { kind: "looking" }, "/srv/b"), null);
+});
+
+test("sessionFolder forgets the folder once the terminal has no session, so the next one records afresh", () => {
+  assert.equal(sessionFolder("/srv/a", startState(), "/srv/b"), null);
+  assert.equal(sessionFolder(null, panelState({ target: remote, scan: { at: 30, sessions: [running] } }), "/srv/b"), "/srv/b");
+});
+
+test("autoStart does not restart an auto-started session that ended within 30 seconds", () => {
+  assert.equal(autoStart(startState(), ready({ run: { at: 1000, endedAt: 30000 } })), false);
+  assert.equal(autoStart(startState(), ready({ run: { at: 1000, endedAt: 1000 } })), false);
+});
+
+test("autoStart restarts an auto-started session that ended after 30 seconds", () => {
+  assert.equal(autoStart(startState(), ready({ run: { at: 1000, endedAt: 32000 } })), true);
+  assert.equal(autoStart(startState(), ready({ run: { at: 1000, endedAt: 31000 } })), true);
+  assert.equal(autoStart(startState(), ready({ run: { at: 1000 } })), true);
+});
+
+test("endedQuickly needs an end time", () => {
+  assert.equal(endedQuickly(null), false);
+  assert.equal(endedQuickly({ at: 5 }), false);
+  assert.equal(endedQuickly({ at: 0, endedAt: 29000 }), true);
+  assert.equal(endedQuickly({ at: 0, endedAt: 31000 }), false);
+});
+
+test("trackRun stamps the end the first time the terminal shows no session, and keeps that stamp", () => {
+  const ended = trackRun({ at: 1000 }, startState(), 30000);
+  assert.deepEqual(ended, { at: 1000, endedAt: 30000 });
+  assert.equal(trackRun(ended, startState(), 90000), ended);
+  assert.equal(autoStart(startState(), ready({ run: trackRun(ended, startState(), 90000) })), false);
+});
+
+test("trackRun keeps a run while its session runs or starts, and forgets it when a session runs again after the end", () => {
+  const run = { at: 1000 };
+  const live = panelState({ target: remote, scan: { at: 10, sessions: [running] } });
+  assert.equal(trackRun(run, live, 5000), run);
+  assert.equal(trackRun(run, { kind: "starting" }, 5000), run);
+  assert.equal(trackRun({ at: 1000, endedAt: 2000 }, live, 5000), null);
+  assert.equal(trackRun(null, startState(), 5000), null);
 });

@@ -138,3 +138,49 @@ test("command reports the daemon's error text when it refuses", async () => {
   await assert.rejects(feed.command({ action: "navigate", url: "x" }), /bad url/);
   feed.stopped = true;
 });
+
+test("a stop that lands while the connection opens ends the loop quietly without opening the socket", { timeout: 2000 }, async () => {
+  let connects = 0;
+  globalThis.hostStubs.connect = async () => { connects++; return socket(); };
+  let release, task;
+  const c = conn(55821);
+  c.open = () => new Promise((r) => { release = () => r({ http: "http://127.0.0.1:55821", port: 55821 }); });
+  const cx = renderCx();
+  cx.rendering = false;
+  cx.spawn = (body) => { task = body(cx); return task; };
+  const feed = new Feed("t", c, 15).start(cx);
+  await tick();
+  assert.equal(feed.phase, "connecting");
+  const stopped = feed.stop();
+  release();
+  await task;
+  await stopped;
+  assert.equal(connects, 0);
+  assert.equal(feed.phase, "connecting");
+  assert.equal(feed.error, null);
+  assert.equal(feed.http, null);
+  assert.equal(feed.ws, null);
+  assert.equal(c.closed, 2);
+  assert.equal(cx.notified, 0);
+});
+
+test("a stop that lands while the socket connects closes that socket and ends the loop quietly", { timeout: 2000 }, async () => {
+  let release, closed = 0, task;
+  globalThis.hostStubs.connect = () => new Promise((r) => { release = () => r({ ...socket(), close: async () => { closed++; } }); });
+  const c = conn(55821);
+  const cx = renderCx();
+  cx.rendering = false;
+  cx.spawn = (body) => { task = body(cx); return task; };
+  const feed = new Feed("t", c, 15).start(cx);
+  await tick();
+  assert.equal(typeof release, "function");
+  feed.stop();
+  release();
+  await task;
+  assert.equal(closed, 1);
+  assert.equal(feed.phase, "connecting");
+  assert.equal(feed.error, null);
+  assert.equal(feed.ws, null);
+  assert.equal(feed.http, null);
+  assert.equal(cx.notified, 0);
+});
