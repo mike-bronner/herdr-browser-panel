@@ -5,7 +5,7 @@ import { register } from "node:module";
 const stubs = {
   "gpui-kit": "export class View {} export const div = () => null; export const image = () => null; export const svg = () => null;",
   "gpui-base": "export const v_flex = () => null; export const h_flex = () => null; export const Input = { new: () => null }; export const InputState = { new: () => { let v = ''; const handlers = {}; const s = { handlers, range: null, focused: false, on(name, h) { handlers[name] = h; }, value: () => v, set_value(x) { v = x; }, set_selected_range(r) { s.range = r; }, focus() { if (s.focused) return; s.focused = true; handlers.focus?.({}, { notify() {} }); }, blur() { if (!s.focused) return; s.focused = false; handlers.blur?.({}, { notify() {} }); } }; return s; } };",
-  herdr: ["exec", "focused", "spaces", "panes", "theme", "window", "layout", "checking", "hc", "appHome", "readTextFile", "watchFolder"]
+  herdr: ["exec", "focused", "spaces", "panes", "theme", "window", "layout", "checking", "settings", "hc", "appHome", "readTextFile", "watchFolder"]
     .map((name) => `export const ${name} = (...a) => globalThis.host.${name}(...a);`).join("\n"),
   websocket: "export const WebSocket = { connect: async () => { throw new Error('no socket'); } };",
 };
@@ -38,6 +38,7 @@ beforeEach(() => {
   globalThis.host = {
     checking: () => false,
     window: () => ({ visible }),
+    settings: () => ({ zoom: 1 }),
     layout: () => null,
     exec: async (command, args, options) => {
       calls.push({ command, args, on: options?.on ?? null });
@@ -210,7 +211,7 @@ test("a live feed sets the session's viewport to the picture area, rounded to wh
   b.area = { width: 489.6, height: 1000.2 };
   b.fit(cx);
   await drain(cx);
-  assert.deepEqual(sent, [{ action: "viewport", width: 490, height: 1000 }]);
+  assert.deepEqual(sent, [{ action: "viewport", width: 490, height: 1000, deviceScaleFactor: 1 }]);
 });
 
 test("an unchanged area sends no second viewport", async () => {
@@ -254,7 +255,7 @@ test("a resize under way waits for the gap once, then sends the latest area", as
   Date.now = () => realNow() + 300;
   try { cx.timers[0].fn(cx); } finally { Date.now = realNow; }
   await drain(cx);
-  assert.deepEqual(sent.at(-1), { action: "viewport", width: 520, height: 990 });
+  assert.deepEqual(sent.at(-1), { action: "viewport", width: 520, height: 990, deviceScaleFactor: 1 });
 });
 
 test("render's own check sends when due but never schedules a wait", async () => {
@@ -428,7 +429,7 @@ test("a new area or a new connect sends at once despite a refused viewport's bac
   const area = refusing();
   await area.at(0);
   await area.at(300, { width: 520, height: 1000 });
-  assert.deepEqual(area.sent.at(-1), { action: "viewport", width: 520, height: 1000 });
+  assert.deepEqual(area.sent.at(-1), { action: "viewport", width: 520, height: 1000, deviceScaleFactor: 1 });
   assert.equal(area.b.sized.failures, 1);
   const connect = refusing();
   await connect.at(0);
@@ -448,5 +449,97 @@ test("a feed that reconnects and goes live again gets the viewport again", async
   b.fit(cx);
   await drain(cx);
   assert.equal(sent.length, 2);
-  assert.deepEqual(sent[1], { action: "viewport", width: 490, height: 1000 });
+  assert.deepEqual(sent[1], { action: "viewport", width: 490, height: 1000, deviceScaleFactor: 1 });
+});
+
+test("a narrow area sends its own width at scale 1 on every platform", async () => {
+  globalThis.host.window = () => ({ visible, platform: "macos" });
+  const { b, cx, sent } = sized();
+  b.area = { width: 361, height: 1228 };
+  b.fit(cx);
+  await drain(cx);
+  assert.deepEqual(sent, [{ action: "viewport", width: 361, height: 1228, deviceScaleFactor: 1 }]);
+});
+
+function staleAt(page, clean = false) {
+  return { page, frame: { width: page.width, height: page.height }, crop: page, clean };
+}
+
+test("a stale frame of the size just sent gets the same viewport again after the gap, at most three times", async () => {
+  const { b, cx, sent } = sized();
+  b.area = { width: 361, height: 1228 };
+  b.fit(cx);
+  await drain(cx);
+  b.feed.picture = staleAt({ width: 361, height: 1228 });
+  const realNow = Date.now;
+  try {
+    for (let i = 1; i <= 5; i++) {
+      Date.now = () => realNow() + 300 * i;
+      b.fit(cx, false);
+      await drain(cx);
+    }
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(sent.length, 4);
+  assert.deepEqual(sent.at(-1), { action: "viewport", width: 361, height: 1228, deviceScaleFactor: 1 });
+  assert.equal(b.sized.refits, 3);
+});
+
+test("a stale frame schedules its resend when render finds it before the gap ends", async () => {
+  const { b, cx, sent } = sized();
+  b.area = { width: 361, height: 1228 };
+  b.fit(cx);
+  b.feed.picture = staleAt({ width: 361, height: 1228 });
+  b.fit(cx, true);
+  await drain(cx);
+  assert.equal(sent.length, 1);
+  assert.equal(cx.timers.length, 1);
+});
+
+test("a clean frame, or a stale frame of another size, sends no second viewport", async () => {
+  for (const picture of [staleAt({ width: 361, height: 1228 }, true), staleAt({ width: 600, height: 800 })]) {
+    const { b, cx, sent } = sized();
+    b.area = { width: 361, height: 1228 };
+    b.fit(cx);
+    await drain(cx);
+    b.feed.picture = picture;
+    const realNow = Date.now;
+    Date.now = () => realNow() + 1000;
+    try { b.fit(cx, false); } finally { Date.now = realNow; }
+    await drain(cx);
+    assert.equal(sent.length, 1, JSON.stringify(picture));
+  }
+});
+
+test("a new area after three resends sends once with the count back at zero, and its own stale frame resends again", async () => {
+  const { b, cx, sent } = sized();
+  b.area = { width: 361, height: 1228 };
+  b.fit(cx);
+  await drain(cx);
+  b.feed.picture = staleAt({ width: 361, height: 1228 });
+  const realNow = Date.now;
+  let t = 0;
+  const at = async (fn) => {
+    t += 300;
+    Date.now = () => realNow() + t;
+    try { fn(); } finally { Date.now = realNow; }
+    await drain(cx);
+  };
+  try {
+    for (let i = 0; i < 4; i++) await at(() => b.fit(cx, false));
+    assert.equal(sent.length, 4);
+    assert.equal(b.sized.refits, 3);
+    b.area = { width: 300, height: 700 };
+    await at(() => b.fit(cx, false));
+    assert.equal(sent.length, 5);
+    assert.deepEqual(sent.at(-1), { action: "viewport", width: 300, height: 700, deviceScaleFactor: 1 });
+    assert.equal(b.sized.refits, 0);
+    b.feed.picture = staleAt({ width: 300, height: 700 });
+    await at(() => b.fit(cx, false));
+    assert.equal(sent.length, 6);
+    assert.equal(b.sized.refits, 1);
+  } finally {
+    Date.now = realNow;
+  }
 });

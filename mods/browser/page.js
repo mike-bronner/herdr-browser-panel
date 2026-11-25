@@ -28,15 +28,29 @@ export function jpegSize(bytes) {
   return null;
 }
 
-export function pageOf(size, deviceWidth) {
-  if (!size?.width || !size?.height) return null;
-  const width = deviceWidth || size.width;
-  return { width, height: Math.round((size.height * width) / size.width) };
+const fitScale = (bounds, pageW, pageH) => Math.min(bounds.width / pageW, bounds.height / pageH);
+
+export function pictureOf(size, meta) {
+  if (!(size?.width > 0 && size?.height > 0)) return null;
+  const frame = { width: size.width, height: size.height };
+  const dw = meta?.deviceWidth, dh = meta?.deviceHeight;
+  if (!(Number.isFinite(dw) && Number.isFinite(dh) && dw > 0 && dh > 0)) return { page: frame, frame, crop: frame, clean: true };
+  const s = fitScale(frame, dw, dh);
+  const crop = { width: dw * s, height: dh * s };
+  return { page: { width: dw, height: dh }, frame, crop, clean: frame.width - crop.width <= 1 && frame.height - crop.height <= 1 };
+}
+
+export function drawPlan(picture, box) {
+  if (!picture || !(box?.width > 0 && box?.height > 0)) return null;
+  const { page, frame, crop } = picture;
+  const k = fitScale(box, page.width, page.height);
+  const width = page.width * k, height = page.height * k, z = width / crop.width;
+  return { left: (box.width - width) / 2, top: (box.height - height) / 2, width, height, imageWidth: frame.width * z, imageHeight: frame.height * z };
 }
 
 export function toPage(local, bounds, pageW, pageH, clamp = false) {
   if (!local || !bounds || !pageW || !pageH || !bounds.width || !bounds.height) return null;
-  const s = Math.min(bounds.width / pageW, bounds.height / pageH);
+  const s = fitScale(bounds, pageW, pageH);
   let x = (local.x - (bounds.width - pageW * s) / 2) / s;
   let y = (local.y - (bounds.height - pageH * s) / 2) / s;
   if (x < 0 || y < 0 || x > pageW || y > pageH) {
@@ -121,7 +135,8 @@ export function mouseMessage(e, eventType, button, page, browserOs, pressed) {
 export function wheelMessage(e, page, browserOs) {
   const at = page ? toPage(e.local_position, e.bounds, page.width, page.height) : null;
   if (!at) return null;
-  return { type: "input_mouse", eventType: "mouseWheel", x: at.x, y: at.y, deltaX: -e.delta.x, deltaY: -e.delta.y, modifiers: cdpModifiers(e.modifiers, browserOs) };
+  const s = fitScale(e.bounds, page.width, page.height);
+  return { type: "input_mouse", eventType: "mouseWheel", x: at.x, y: at.y, deltaX: -e.delta.x / s, deltaY: -e.delta.y / s, modifiers: cdpModifiers(e.modifiers, browserOs) };
 }
 
 export function followUrl(field, shown, current) {
@@ -151,16 +166,22 @@ export function tunnelArgs(target, localPort, remotePort, log, seconds = 30) {
 }
 
 const MIN_VIEWPORT = 100;
+const MAX_REFITS = 3;
 
 export function viewportFor(size) {
   const width = Math.round(size?.width), height = Math.round(size?.height);
-  return Number.isFinite(width) && Number.isFinite(height) && width >= MIN_VIEWPORT && height >= MIN_VIEWPORT ? { width, height } : null;
+  return Number.isFinite(width) && Number.isFinite(height) && width >= MIN_VIEWPORT && height >= MIN_VIEWPORT ? { width, height, deviceScaleFactor: 1 } : null;
 }
 
-export function resizeStep(want, sent, now, gapMs) {
+export function resizeStep(want, sent, now, gapMs, picture = null) {
   if (!want) return null;
   const same = sent?.width === want.width && sent?.height === want.height;
-  if (same && sent.retryAt == null) return null;
+  if (same && sent.retryAt == null) {
+    const stale = picture?.clean === false && picture.page.width === want.width && picture.page.height === want.height;
+    if (!stale || (sent.refits ?? 0) >= MAX_REFITS) return null;
+    const wait = sent.at + gapMs - now;
+    return wait > 0 ? { wait } : { send: want, refit: true };
+  }
   const wait = (same ? sent.retryAt : (sent?.at ?? -Infinity) + gapMs) - now;
   return wait > 0 ? { wait } : { send: want };
 }

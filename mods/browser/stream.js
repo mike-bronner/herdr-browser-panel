@@ -1,5 +1,5 @@
 import { WebSocket } from "websocket";
-import { jpegSize, pageOf } from "./page.js";
+import { jpegSize, pictureOf } from "./page.js";
 import { Frames } from "./frames.js";
 
 const reason = (e) => String(e?.message ?? e ?? "failed").replace(/^Error: /, "");
@@ -14,6 +14,7 @@ export class Feed {
     this.phase = "connecting";
     this.error = null;
     this.page = null;
+    this.picture = null;
     this.latest = null;
     this.url = null;
     this.tabs = [];
@@ -89,7 +90,7 @@ export class Feed {
     try { m = JSON.parse(text); } catch { return; }
     if (m.type === "frame") {
       if (typeof m.data !== "string") return;
-      this.latest = { data: m.data, width: m.metadata?.deviceWidth, seq: m.seq };
+      this.latest = { data: m.data, meta: m.metadata, seq: m.seq };
       this.show(cx);
     } else if (m.type === "url" && typeof m.url === "string") {
       this.url = m.url;
@@ -106,13 +107,16 @@ export class Feed {
     this.taken = f;
     this.inFlight++;
     const bytes = Buffer.from(f.data, "base64");
-    const page = pageOf(jpegSize(bytes), f.width);
+    const picture = pictureOf(jpegSize(bytes), f.meta);
     cx.spawn(async (cx) => {
       const shown = await this.frames.push(bytes, cx, () => {
         if (f.seq != null) this.send({ type: "ack", seq: f.seq });
-      });
+      }, picture);
       this.inFlight--;
-      if (shown) this.page = page ?? this.page;
+      if (shown && picture) {
+        this.picture = picture;
+        this.page = picture.page;
+      }
       if (!this.stopped) this.show(cx);
     });
   }

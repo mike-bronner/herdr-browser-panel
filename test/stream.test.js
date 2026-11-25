@@ -198,3 +198,43 @@ test("a tabs message keeps the session's tab list and redraws, and a malformed o
   assert.deepEqual(feed.tabs, tabs);
   assert.equal(cx.notified, 1);
 });
+
+function jpegOf(width, height) {
+  return Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, height >> 8, height & 255, width >> 8, width & 255, 0, 0, 0, 0, 0]).toString("base64");
+}
+
+test("a shown frame keeps its picture, with the page size from the frame's metadata", async () => {
+  const feed = new Feed("p", conn(1), 15);
+  const cx = renderCx();
+  cx.rendering = false;
+  const pushed = [];
+  feed.frames = { push: async (bytes, cx, written, picture) => { written(); pushed.push(picture); return true; } };
+  feed.handle(JSON.stringify({ type: "frame", data: jpegOf(361, 887), metadata: { deviceWidth: 361, deviceHeight: 1228 } }), cx);
+  await tick();
+  assert.deepEqual(feed.page, { width: 361, height: 1228 });
+  assert.equal(feed.picture.clean, false);
+  assert.equal(pushed[0], feed.picture);
+});
+
+test("a frame the layers drop, or a shown frame with no JPEG size, leaves the last picture and page in place", async () => {
+  const feed = new Feed("p", conn(1), 15);
+  const cx = renderCx();
+  cx.rendering = false;
+  let keep = true, pushes = 0;
+  feed.frames = { push: async (bytes, cx, written) => { written(); pushes++; return keep; } };
+  feed.handle(JSON.stringify({ type: "frame", data: jpegOf(600, 800), metadata: { deviceWidth: 600, deviceHeight: 800 }, seq: 1 }), cx);
+  await tick();
+  const picture = feed.picture;
+  assert.deepEqual(picture.page, { width: 600, height: 800 });
+  keep = false;
+  feed.handle(JSON.stringify({ type: "frame", data: jpegOf(300, 400), metadata: { deviceWidth: 300, deviceHeight: 400 }, seq: 2 }), cx);
+  await tick();
+  assert.equal(feed.picture, picture);
+  assert.deepEqual(feed.page, { width: 600, height: 800 });
+  keep = true;
+  feed.handle(JSON.stringify({ type: "frame", data: Buffer.from([1, 2, 3]).toString("base64"), metadata: { deviceWidth: 300, deviceHeight: 400 }, seq: 3 }), cx);
+  await tick();
+  assert.equal(pushes, 3);
+  assert.equal(feed.picture, picture);
+  assert.deepEqual(feed.page, { width: 600, height: 800 });
+});

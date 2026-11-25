@@ -1,6 +1,6 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, focused, spaces, panes, theme, window, layout, checking } from "herdr";
+import { exec, focused, spaces, panes, theme, window, layout, checking, settings } from "herdr";
 import { DISCOVER, parseDiscovery } from "./discovery.js";
 import { installPlan, needsSudoCheck, installStep, installFailure, installDone, outputTail, settledInstall } from "./install.js";
 import { follow, targetKey, panelState, settledStart, blockShown, machineLabel, startArgs, streamArgs, feedKey, takesKeys, findSession, terminalFolder, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
@@ -268,10 +268,10 @@ export default class Browser extends View {
     const feed = this.feed;
     if (feed?.phase !== "live" || !shown()) return;
     const sent = this.sized?.connect === feed.connects ? this.sized : null;
-    const step = resizeStep(viewportFor(this.area), sent, Date.now(), RESIZE_MS);
+    const step = resizeStep(viewportFor(this.area), sent, Date.now(), RESIZE_MS, feed.picture);
     if (step?.send) {
       const same = sent?.width === step.send.width && sent?.height === step.send.height;
-      const sized = { ...step.send, at: Date.now(), connect: feed.connects, failures: same ? sent.failures : 0 };
+      const sized = { ...step.send, at: Date.now(), connect: feed.connects, failures: same ? sent.failures : 0, refits: step.refit ? (sent.refits ?? 0) + 1 : 0 };
       this.sized = sized;
       cx.spawn(async (cx) => {
         try { await feed.command({ action: "viewport", ...step.send }); } catch (e) {
@@ -288,6 +288,11 @@ export default class Browser extends View {
         this.fit(cx);
       });
     }
+  }
+
+  box() {
+    const zoom = Number(settings()?.zoom) || 1;
+    return this.area && { width: this.area.width / zoom, height: this.area.height / zoom };
   }
 
   async close() {
@@ -333,7 +338,7 @@ export default class Browser extends View {
         this.fit(cx);
       })
       .track_focus(this.h)
-      .children(feed ? feed.frames.view() : [])
+      .children(feed ? feed.frames.view(this.box()) : [])
       .when(Boolean(message), (el) => el.child(h_flex().absolute().inset_0().items_center().justify_center().px(20).text_size(12).text_color(t.dim).child(message)))
       .when(this.keysShown, (el) => el.child(div().absolute().inset_0().rounded(8).border_2().border_color(t.accent)))
       .on_mouse_down("left", (e, cx) => {
@@ -493,7 +498,7 @@ export default class Browser extends View {
     if (!settledStart(state, this.starts.get(key))) this.starts.delete(key);
     if (!settledInstall(state, install)) this.installs.delete(machineKey(target?.machine));
     this.sync(state, visible, cx);
-    this.fit(cx, false);
+    this.fit(cx, this.feed?.picture?.clean === false);
     this.keysShown = this.takesKeys();
     const t = theme();
     const title = state.kind === "running" ? pageTitle(this.feed?.tabs, this.feed?.url ?? state.url) : "";
