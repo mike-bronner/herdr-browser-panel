@@ -43,8 +43,10 @@ export class Feed {
     let backoff = 1000;
     while (!this.stopped) {
       try {
-        this.phase = "connecting";
-        cx.notify();
+        if (this.phase !== "connecting") {
+          this.phase = "connecting";
+          cx.notify();
+        }
         const { http, port } = await this.conn.open(cx);
         if (this.stopped) throw null;
         this.http = http;
