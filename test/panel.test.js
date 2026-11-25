@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startArgs, panelState, settledStart, blockShown } from "../mods/browser/panel.js";
+import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startArgs, streamArgs, feedKey, takesKeys, panelState, settledStart, blockShown } from "../mods/browser/panel.js";
 
 const SPACES = [{ id: "sp-local", machine: null }, { id: "sp-remote", machine: "build_box" }];
 
@@ -113,7 +113,7 @@ test("startArgs refuses any name that is not a terminal session name", () => {
 });
 
 const remote = { address: "build_box/t6", machine: "build_box", id: "t6", session: "herdr-t6" };
-const running = { session: "herdr-t6", namespace: null, port: 4321, url: "https://example.com/", engine: "chrome" };
+const running = { session: "herdr-t6", namespace: null, pid: 77, port: 4321, url: "https://example.com/", engine: "chrome" };
 
 test("panelState is idle with no target", () => {
   assert.deepEqual(panelState({ target: null }), { kind: "idle" });
@@ -128,10 +128,49 @@ test("panelState is looking until the terminal's machine has answered", () => {
 });
 
 test("panelState is running with session, machine, port and page when the session exists", () => {
-  assert.deepEqual(panelState({ target: remote, scan: { sessions: [running], error: null } }), {
+  assert.deepEqual(panelState({ target: remote, scan: { at: 5, os: "Darwin", sessions: [running], error: null } }), {
     kind: "running", session: "herdr-t6", machine: "build_box", address: "build_box/t6",
-    port: 4321, url: "https://example.com/", engine: "chrome",
+    at: 5, pid: 77, port: 4321, url: "https://example.com/", engine: "chrome", os: "Darwin",
   });
+});
+
+test("panelState gives a null os when the machine did not report one", () => {
+  assert.equal(panelState({ target: remote, scan: { sessions: [running] } }).os, null);
+});
+
+test("streamArgs enables the stream in the named session", () => {
+  assert.deepEqual(streamArgs("herdr-t1b"), ["--session", "herdr-t1b", "stream", "enable"]);
+});
+
+test("streamArgs refuses any name that is not a terminal session name", () => {
+  for (const name of ["t1b", "herdr-", "herdr-t;1", "--session", undefined]) assert.throws(() => streamArgs(name), /not a terminal session name/, String(name));
+});
+
+const live = { kind: "running", at: 100, pid: 77, port: 4321 };
+
+test("feedKey names the terminal, daemon and port of a visible running session", () => {
+  assert.equal(feedKey(live, remote, true), "build_box|build_box/t6|77|4321");
+});
+
+test("feedKey is null while the panel is hidden", () => {
+  assert.equal(feedKey(live, remote, false), null);
+});
+
+test("feedKey is null when the session is not running or has no stream port", () => {
+  for (const kind of ["idle", "looking", "start", "starting", "unreachable", "unsupported"]) assert.equal(feedKey({ ...live, kind }, remote, true), null, kind);
+  assert.equal(feedKey({ ...live, port: null }, remote, true), null);
+  assert.equal(feedKey(null, remote, true), null);
+});
+
+test("feedKey changes when focus, daemon or port changes", () => {
+  const local = { address: "t6", machine: null, id: "t6", session: "herdr-t6" };
+  const keys = new Set([
+    feedKey(live, remote, true),
+    feedKey(live, local, true),
+    feedKey({ ...live, pid: 78 }, remote, true),
+    feedKey({ ...live, port: 4322 }, remote, true),
+  ]);
+  assert.equal(keys.size, 4);
 });
 
 test("panelState shows running even while a start is still pending", () => {
@@ -228,4 +267,24 @@ test("blockShown is false when a hidden ancestor holds the browser block", () =>
 test("blockShown is null when the layout has no browser block", () => {
   assert.equal(blockShown(panelLayout("files"), "other"), null);
   assert.equal(blockShown(null, "browser"), null);
+});
+
+test("feedKey is null for a running state from a scan older than the panel's show time", () => {
+  const state = panelState({ target: { ...remote, since: 10 }, scan: { at: 50, sessions: [running] } });
+  assert.equal(state.kind, "running");
+  assert.equal(feedKey(state, remote, true, 60), null);
+});
+
+test("feedKey accepts a scan taken at or after the panel's show time", () => {
+  assert.equal(feedKey(live, remote, true, 100), "build_box|build_box/t6|77|4321");
+  assert.equal(feedKey(live, remote, true, 99), "build_box|build_box/t6|77|4321");
+});
+
+test("takesKeys is true only while the picture has focus and the stream is live", () => {
+  assert.equal(takesKeys(true, "live"), true);
+  assert.equal(takesKeys(false, "live"), false);
+});
+
+test("takesKeys leaves keys to Herdr while the stream connects, retries or is absent", () => {
+  for (const phase of ["connecting", "error", undefined, null]) assert.equal(takesKeys(true, phase), false, String(phase));
 });

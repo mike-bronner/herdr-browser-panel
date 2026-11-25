@@ -33,9 +33,22 @@ export function findSession(sessions, name) {
   return sessions?.find((s) => s.session === name && !s.namespace) ?? null;
 }
 
-export function startArgs(session) {
+function checked(session) {
   if (typeof session !== "string" || !/^herdr-[A-Za-z0-9_-]+$/.test(session)) throw new Error(`not a terminal session name: ${session}`);
-  return ["--session", session, "open", "about:blank"];
+  return session;
+}
+
+export function startArgs(session) {
+  return ["--session", checked(session), "open", "about:blank"];
+}
+
+export function streamArgs(session) {
+  return ["--session", checked(session), "stream", "enable"];
+}
+
+export function feedKey(state, target, visible, shownAt) {
+  if (!visible || state?.kind !== "running" || !state.port || state.at < shownAt) return null;
+  return `${targetKey(target)}|${state.pid ?? ""}|${state.port}`;
 }
 
 export function panelState({ target, scan, start }) {
@@ -44,7 +57,7 @@ export function panelState({ target, scan, start }) {
   if (!target.session) return { kind: "unsupported", ...where };
   const fresh = scan && !(scan.at < target.since) ? scan : null;
   const found = fresh ? findSession(fresh.sessions, target.session) : null;
-  if (found) return { kind: "running", ...where, port: found.port, url: found.url, engine: found.engine };
+  if (found) return { kind: "running", ...where, at: fresh.at, pid: found.pid, port: found.port, url: found.url, engine: found.engine, os: fresh.os ?? null };
   if (start?.status === "starting") return { kind: "starting", ...where };
   if (!fresh) return { kind: "looking", ...where };
   if (fresh.error) return { kind: "unreachable", ...where, error: fresh.error };
@@ -72,4 +85,8 @@ function visible(node, mod) {
 
 export function blockShown(root, mod) {
   return holds(root, mod) ? visible(root, mod) : null;
+}
+
+export function takesKeys(focused, phase) {
+  return Boolean(focused) && phase === "live";
 }

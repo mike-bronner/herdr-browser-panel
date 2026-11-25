@@ -1,7 +1,17 @@
-discovery.js is adapted from agent-browser/mods/agent-browser/lib.js in deevs-herdr-kit
-(https://github.com/DeevsDeevs/deevs-herdr-kit): the session discovery
-script, its parser and the address shortener. That code is used under the
-following license.
+These files are adapted from agent-browser/mods/agent-browser in deevs-herdr-kit
+(https://github.com/DeevsDeevs/deevs-herdr-kit):
+
+- discovery.js, from lib.js: the session discovery script, its parser and
+  the address shortener.
+- page.js, from lib.js: the address normalizer, the JPEG size reader, the
+  page mapping, and the mouse and keyboard messages. Its tunnel argument
+  list comes from connect.js.
+- stream.js, from stream.js: the stream connection, frame pacing and input
+  queue.
+- frames.js, from frames.js: the frame files that make the live picture.
+- connect.js, from connect.js: the direct connection and the ssh tunnel.
+
+That code is used under the following license.
 
 MIT License
 

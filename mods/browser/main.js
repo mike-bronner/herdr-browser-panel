@@ -1,10 +1,17 @@
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, focused, spaces, theme, window, layout, checking } from "herdr";
 import { DISCOVER, parseDiscovery, brief } from "./discovery.js";
-import { follow, targetKey, panelState, settledStart, blockShown, machineLabel, startArgs } from "./panel.js";
+import { follow, targetKey, panelState, settledStart, blockShown, machineLabel, startArgs, streamArgs, feedKey, takesKeys } from "./panel.js";
+import { slug, normalizeUrl, mouseMessage, wheelMessage, keyMessages, textMessages, followUrl } from "./page.js";
+import { connector } from "./connect.js";
+import { Feed } from "./stream.js";
+import { sweep } from "./frames.js";
 
 const SCAN_MS = 4000;
+const FPS = 15;
+const KEEP_MS = 2 * 60 * 1000;
+const SWEEP_MS = 6 * 60 * 1000;
 const reason = (e) => String(e?.message ?? e ?? "failed").replace(/^Error: /, "");
 const machineKey = (machine) => machine ?? "";
 const shown = () => window()?.visible !== false && blockShown(layout(), "browser") !== false;
@@ -13,15 +20,23 @@ async function discover(machine) {
   const at = Date.now();
   try {
     const r = await exec("sh", ["-c", DISCOVER], { on: machine, timeout: 10000 });
-    const { sessions } = parseDiscovery(r.stdout);
-    return { at, sessions, error: r.code !== 0 && !sessions.length ? r.stderr.trim() || `exit ${r.code}` : null };
+    const { os, sessions } = parseDiscovery(r.stdout);
+    return { at, os, sessions, error: r.code !== 0 && !sessions.length ? r.stderr.trim() || `exit ${r.code}` : null };
   } catch (e) {
-    return { at, sessions: [], error: reason(e) };
+    return { at, os: null, sessions: [], error: reason(e) };
   }
 }
 
 function note(t, text, color = t.dim) {
   return div().text_size(12).text_color(color).child(text);
+}
+
+function control(t, id, label, tip, onClick) {
+  return h_flex().id(id).h(26).min_w(26).px(6).flex_none().items_center().justify_center().rounded(6).cursor_pointer()
+    .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
+    .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+    .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); })
+    .child(label);
 }
 
 export default class Browser extends View {
@@ -30,13 +45,39 @@ export default class Browser extends View {
     this.scans = new Map();
     this.scanning = new Map();
     this.starts = new Map();
+    this.streamErrors = new Map();
+    this.feed = null;
+    this.feedKey = null;
+    this.shownAt = null;
+    this.keysShown = false;
+    this.os = null;
+    this.copy = Math.random().toString(36).slice(2, 8);
+    this.note = null;
+    this.pressed = null;
+    this.lastPoint = null;
+    this.lastMove = 0;
+    this.h = cx.focus_handle();
+    this.address = InputState.new({ placeholder: "Go to…" });
+    this.shownUrl = "";
+    this.address.on("submit", (_e, cx) => {
+      this.shownUrl = this.address.value();
+      const url = normalizeUrl(this.address.value());
+      if (url) this.act({ action: "navigate", url }, cx);
+    });
     if (checking()) return;
-    cx.timer.every(SCAN_MS, (cx) => { if (shown()) this.scan(cx); });
+    cx.spawn(async () => { await sweep(SWEEP_MS); });
+    cx.timer.every(SCAN_MS, (cx) => {
+      if (!shown()) return void this.drop();
+      if (this.keysShown !== this.takesKeys()) cx.notify();
+      this.scan(cx);
+      const feed = this.feed;
+      if (feed) cx.spawn(async (cx) => { await feed.frames.keepAlive(cx, KEEP_MS); });
+    });
   }
 
   scan(cx, target = this.target) {
     const key = machineKey(target?.machine);
-    if (!target?.session || this.scanning.get(key) >= (target.since ?? 0)) return;
+    if (!target?.session || this.scanning.get(key) >= Math.max(target.since ?? 0, this.shownAt ?? 0)) return;
     const at = Date.now();
     this.scanning.set(key, at);
     cx.spawn(async (cx) => {
@@ -53,6 +94,7 @@ export default class Browser extends View {
     const key = targetKey(target);
     if (this.starts.get(key)?.status === "starting") return;
     this.starts.set(key, { status: "starting" });
+    this.streamErrors.delete(key);
     cx.notify();
     cx.spawn(async (cx) => {
       let result;
@@ -62,15 +104,150 @@ export default class Browser extends View {
       } catch (e) {
         result = { status: "failed", error: `agent-browser could not run on ${machineLabel(target.machine)}: ${reason(e)}` };
       }
+      if (result.status === "started") {
+        try {
+          const s = await exec("agent-browser", streamArgs(target.session), { on: target.machine, timeout: 30000 });
+          if (s.code !== 0) this.streamErrors.set(key, s.stderr.trim() || s.stdout.trim() || `exit ${s.code}`);
+        } catch (e) {
+          this.streamErrors.set(key, reason(e));
+        }
+      }
       this.keep(machineKey(target.machine), await discover(target.machine));
       this.starts.set(key, result);
       cx.notify();
     });
   }
 
+  sync(state, visible, cx) {
+    const key = feedKey(state, this.target, visible, this.shownAt);
+    if (key === this.feedKey) return;
+    this.drop();
+    if (!key) return;
+    this.feedKey = key;
+    this.os = state.os;
+    this.feed = new Feed(`${this.copy}-${slug(key)}`, connector(state.machine, state.port), FPS).start(cx);
+  }
+
+  drop() {
+    if (!this.feedKey) return Promise.resolve();
+    const feed = this.feed;
+    this.feed = null;
+    this.feedKey = null;
+    this.pressed = null;
+    this.lastPoint = null;
+    this.note = null;
+    this.keysShown = false;
+    this.shownUrl = "";
+    this.address.set_value("");
+    return feed ? feed.stop() : Promise.resolve();
+  }
+
+  async close() {
+    await this.drop();
+  }
+
+  say(text, cx) {
+    const at = Date.now();
+    this.note = { text, at };
+    cx.notify();
+    cx.timer.after(4000, (cx) => {
+      if (this.note?.at === at) this.note = null;
+      cx.notify();
+    });
+  }
+
+  act(body, cx) {
+    const feed = this.feed;
+    if (!feed) return;
+    cx.spawn(async (cx) => {
+      try { await feed.command(body); } catch (e) { if (this.feed === feed) this.say(`${body.action}: ${reason(e)}`, cx); }
+    });
+  }
+
+  mouse(e, eventType, button) {
+    const msg = mouseMessage(e, eventType, button, this.feed?.page, this.os, this.pressed);
+    if (!msg) return;
+    this.lastPoint = { x: msg.x, y: msg.y };
+    this.feed.send(msg, eventType === "mouseMoved");
+  }
+
+  takesKeys() {
+    return takesKeys(this.h.is_focused(), this.feed?.phase);
+  }
+
+  screen(t, state) {
+    const feed = this.feed;
+    const message = !state.port
+      ? `This session has no live view.${this.streamErrors.has(targetKey(this.target)) ? ` ${this.streamErrors.get(targetKey(this.target))}` : ""}`
+      : !feed ? "Connecting…"
+      : feed.phase === "error" ? `Cannot reach the live view: ${feed.error ?? "disconnected"}`
+      : feed.frames.empty ? (feed.phase === "live" ? "Waiting for the page to paint…" : "Connecting…")
+      : null;
+    return div().id("browser-screen").relative().flex_1().min_h(0).rounded(8).overflow_hidden().bg(t.surface)
+      .track_focus(this.h)
+      .children(feed ? feed.frames.view() : [])
+      .when(Boolean(message), (el) => el.child(h_flex().absolute().inset_0().items_center().justify_center().px(20).text_size(12).text_color(t.dim).child(message)))
+      .when(this.keysShown, (el) => el.child(div().absolute().inset_0().rounded(8).border_2().border_color(t.accent)))
+      .on_mouse_down("left", (e, cx) => {
+        cx.stop_propagation();
+        this.h.focus();
+        this.pressed = "left";
+        this.mouse(e, "mousePressed", "left");
+        cx.notify();
+      })
+      .on_mouse_up("left", (e) => {
+        this.mouse(e, "mouseReleased", "left");
+        this.pressed = null;
+      })
+      .on_mouse_down("right", (e, cx) => {
+        cx.stop_propagation();
+        this.mouse(e, "mousePressed", "right");
+      })
+      .on_mouse_up("right", (e) => this.mouse(e, "mouseReleased", "right"))
+      .on_hover((inside) => {
+        if (inside || !this.pressed || !this.lastPoint) return;
+        this.feed?.send({ type: "input_mouse", eventType: "mouseReleased", ...this.lastPoint, button: this.pressed, clickCount: 1 });
+        this.pressed = null;
+      })
+      .on_mouse_move((e) => {
+        const now = Date.now();
+        if (now - this.lastMove < 33 || !(this.pressed || this.h.is_focused())) return;
+        this.lastMove = now;
+        this.mouse(e, "mouseMoved", this.pressed ?? "none");
+      })
+      .on_scroll_wheel((e, cx) => {
+        const msg = wheelMessage(e, this.feed?.page, this.os);
+        if (!msg) return;
+        cx.stop_propagation();
+        this.feed.send(msg);
+      })
+      .on_key_down((e, cx) => {
+        if (!this.takesKeys()) return;
+        cx.stop_propagation();
+        const messages = e.keystroke === "cmd-v" || e.keystroke === "ctrl-v" ? textMessages(cx.read_from_clipboard()) : keyMessages(e, this.os);
+        for (const m of messages) this.feed.send(m);
+      });
+  }
+
   viewer(t, state) {
-    return v_flex().id("browser-viewer").flex_1().min_h(0).items_center().justify_center().gap(4).rounded(8).bg(t.surface)
-      .child(note(t, state.port ? `Stream on port ${state.port}` : "This session has no stream port"));
+    const next = followUrl(this.address.value(), this.shownUrl, this.feed?.url ?? state.url);
+    if (next) {
+      this.address.set_value(next);
+      this.shownUrl = next;
+    }
+    return v_flex().id("browser-viewer").flex_1().min_h(0).gap(8)
+      .child(h_flex().h(30).flex_none().gap(4).items_center()
+        .child(control(t, "browser-back", "‹", "Back", (cx) => this.act({ action: "back" }, cx)))
+        .child(control(t, "browser-forward", "›", "Forward", (cx) => this.act({ action: "forward" }, cx)))
+        .child(control(t, "browser-reload", "↻", "Reload", (cx) => this.act({ action: "reload" }, cx)))
+        .child(h_flex().id("browser-address").flex_1().min_w(80).h(28).px(10).items_center().rounded(6).border_1().border_color(t.border).bg(t.background)
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .child(Input.new(this.address).flex_1().h_full().text_size(12).text_color(t.foreground))))
+      .when(Boolean(this.note), (el) => el.child(note(t, this.note.text, t.blocked)))
+      .when(this.keysShown, (el) => el.child(h_flex().id("browser-keys").h(24).flex_none().px(10).gap(6).items_center().rounded(6).bg(t.solid).text_color(t.solid_foreground).text_size(12)
+        .child(div().font_semibold().child("Keys go to the page"))
+        .child(div().truncate().child("Herdr shortcuts too. Click outside the picture to give them back."))))
+      .child(this.screen(t, state));
   }
 
   body(t, state) {
@@ -109,12 +286,15 @@ export default class Browser extends View {
   render(cx) {
     const next = follow(this.target, focused(), spaces(), Date.now());
     const visible = !checking() && shown();
+    if (visible && !this.visible) this.shownAt = Date.now();
     if (visible && (next !== this.target || !this.visible)) this.scan(cx, next);
     this.target = next;
     this.visible = visible;
     const target = this.target, key = targetKey(target);
     const state = panelState({ target, scan: this.scans.get(machineKey(target?.machine)), start: this.starts.get(key) });
     if (!settledStart(state, this.starts.get(key))) this.starts.delete(key);
+    this.sync(state, visible, cx);
+    this.keysShown = this.takesKeys();
     const t = theme();
     return v_flex().id("browser").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
