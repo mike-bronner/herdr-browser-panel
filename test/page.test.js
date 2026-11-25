@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { slug, normalizeUrl, jpegSize, pageOf, toPage, cdpModifiers, keyMessages, textMessages, mouseMessage, wheelMessage, followUrl, sshFor, tunnelArgs } from "../mods/browser/page.js";
+import { slug, normalizeUrl, jpegSize, pageOf, toPage, cdpModifiers, keyMessages, textMessages, mouseMessage, wheelMessage, followUrl, sshFor, tunnelArgs, viewportFor, resizeStep, retryDelay, addressAtRest, pageTitle } from "../mods/browser/page.js";
 
 test("slug keeps only lowercase letters, digits and dashes", () => {
   const s = slug("build_box|build_box/t6|77|4321");
@@ -195,4 +195,79 @@ test("jpegSize gives null for a long buffer with no frame header", () => {
 
 test("sshFor refuses a target that is not a string", () => {
   assert.throws(() => sshFor({ name: "e", target: 42 }), /not reached by a plain ssh target/);
+});
+
+test("viewportFor takes the picture area in whole CSS pixels", () => {
+  assert.deepEqual(viewportFor({ width: 489.5, height: 1000.4 }), { width: 490, height: 1000 });
+  assert.deepEqual(viewportFor({ width: 100, height: 100 }), { width: 100, height: 100 });
+});
+
+test("viewportFor gives nothing for an area too small, missing or not a number", () => {
+  for (const size of [{ width: 99, height: 500 }, { width: 500, height: 99 }, { width: 0, height: 0 }, null, undefined, {}, { width: NaN, height: 500 }, { width: Infinity, height: 500 }, { width: "490", height: undefined }]) {
+    assert.equal(viewportFor(size), null, JSON.stringify(size));
+  }
+});
+
+test("resizeStep sends a new size at once when nothing was sent, or the last send is old enough", () => {
+  const want = { width: 490, height: 1000 };
+  assert.deepEqual(resizeStep(want, null, 1000, 250), { send: want });
+  assert.deepEqual(resizeStep(want, { width: 400, height: 1000, at: 750 }, 1000, 250), { send: want });
+});
+
+test("resizeStep waits out the rest of the gap after a recent send", () => {
+  assert.deepEqual(resizeStep({ width: 490, height: 1000 }, { width: 400, height: 1000, at: 900 }, 1000, 250), { wait: 150 });
+});
+
+test("resizeStep does nothing for the size already sent, or for no size", () => {
+  assert.equal(resizeStep({ width: 490, height: 1000 }, { width: 490, height: 1000, at: 0 }, 1000, 250), null);
+  assert.equal(resizeStep(null, null, 1000, 250), null);
+  assert.deepEqual(resizeStep({ width: 490, height: 1000 }, { width: 490, height: 999, at: 0 }, 1000, 250), { send: { width: 490, height: 1000 } });
+});
+
+test("addressAtRest shows only the domain, without www, and a lock for https", () => {
+  assert.deepEqual(addressAtRest("https://www.google.com/search?q=x#top"), { text: "google.com", secure: true });
+  assert.deepEqual(addressAtRest("http://crossbible.test/john/3"), { text: "crossbible.test", secure: false });
+  assert.deepEqual(addressAtRest("http://127.0.0.1:3000/"), { text: "127.0.0.1:3000", secure: false });
+  assert.deepEqual(addressAtRest("https://user:pw@shop.test/"), { text: "shop.test", secure: true });
+});
+
+test("addressAtRest keeps another scheme's address without its query, credentials or excess length", () => {
+  assert.deepEqual(addressAtRest("about:blank"), { text: "about:blank", secure: false });
+  assert.deepEqual(addressAtRest("file:///tmp/a.html?x=1"), { text: "file:///tmp/a.html", secure: false });
+  assert.equal(addressAtRest(`data:text/html,${"a".repeat(1000)}`).text.length, 300);
+});
+
+test("addressAtRest gives empty text and no lock for no address, and the text itself when it is not a URL", () => {
+  for (const v of ["", "  ", null, undefined, 42]) assert.deepEqual(addressAtRest(v), { text: "", secure: false }, String(v));
+  assert.deepEqual(addressAtRest(" not a url "), { text: "not a url", secure: false });
+});
+
+test("pageTitle takes the active tab's title on one line", () => {
+  const tabs = [{ active: false, title: "Other" }, { active: true, title: "  John 3 \n\t· CrossBible  " }];
+  assert.equal(pageTitle(tabs, "https://crossbible.test/"), "John 3 · CrossBible");
+});
+
+test("pageTitle caps a very long title", () => {
+  assert.equal(pageTitle([{ active: true, title: "x".repeat(1000) }], null).length, 300);
+});
+
+test("pageTitle falls back to the domain with no active tab, no title or no tab list", () => {
+  const url = "https://www.google.com/?q=1";
+  for (const tabs of [[{ active: false, title: "Other" }], [{ active: true, title: "   " }], [{ active: true, title: 7 }], [{ active: true }], [null], "tabs", null, undefined]) {
+    assert.equal(pageTitle(tabs, url), "google.com", JSON.stringify(tabs));
+  }
+  assert.equal(pageTitle(null, null), "");
+});
+
+test("resizeStep retries a refused size only once its retry time has come", () => {
+  const want = { width: 490, height: 1000 };
+  const refused = { width: 490, height: 1000, at: 0, failures: 1, retryAt: 2000 };
+  assert.deepEqual(resizeStep(want, refused, 1500, 250), { wait: 500 });
+  assert.deepEqual(resizeStep(want, refused, 2000, 250), { send: want });
+  assert.deepEqual(resizeStep({ width: 520, height: 1000 }, refused, 300, 250), { send: { width: 520, height: 1000 } });
+});
+
+test("retryDelay doubles from one second and stops at fifteen", () => {
+  assert.deepEqual([1, 2, 3, 4, 5, 6, 20].map(retryDelay), [1000, 2000, 4000, 8000, 15000, 15000, 15000]);
+  assert.equal(retryDelay(0), 1000);
 });

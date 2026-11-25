@@ -1,11 +1,11 @@
-import { View, div } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, focused, spaces, panes, theme, window, layout, checking } from "herdr";
-import { DISCOVER, parseDiscovery, brief } from "./discovery.js";
+import { DISCOVER, parseDiscovery } from "./discovery.js";
 import { installPlan, needsSudoCheck, installStep, installFailure, installDone, outputTail, settledInstall } from "./install.js";
 import { follow, targetKey, panelState, settledStart, blockShown, machineLabel, startArgs, streamArgs, feedKey, takesKeys, findSession, terminalFolder, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
 import { DETECT, parseDetection, herdArgs, parseHerdSites, pickAddress, recall, remember, readMemory } from "./address.js";
-import { slug, normalizeUrl, mouseMessage, wheelMessage, keyMessages, textMessages, followUrl } from "./page.js";
+import { slug, normalizeUrl, mouseMessage, wheelMessage, keyMessages, textMessages, followUrl, viewportFor, resizeStep, retryDelay, addressAtRest, pageTitle } from "./page.js";
 import { connector } from "./connect.js";
 import { Feed } from "./stream.js";
 import { sweep } from "./frames.js";
@@ -16,12 +16,14 @@ const KEEP_MS = 2 * 60 * 1000;
 const SWEEP_MS = 6 * 60 * 1000;
 const INSTALL_MS = 10 * 60 * 1000;
 const DETECT_MS = 15000;
+const RESIZE_MS = 250;
 const MEMORY_KEY = "lastUrls";
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const INSTALLER = { brew: "Homebrew", npm: "npm" };
 const reason = (e) => String(e?.message ?? e ?? "failed").replace(/^Error: /, "");
 const machineKey = (machine) => machine ?? "";
 const shown = () => window()?.visible !== false && blockShown(layout(), "browser") !== false;
+const icon = (name) => svg(`mods/browser/${name}.svg`);
 
 async function discover(machine) {
   const at = Date.now();
@@ -53,6 +55,10 @@ function control(t, id, label, tip, onClick) {
     .child(label);
 }
 
+function iconButton(t, id, name, tip, onClick) {
+  return control(t, id, icon(name).size(16), tip, onClick).w(28).h(28).px(0);
+}
+
 export default class Browser extends View {
   init(_props, cx) {
     this.target = null;
@@ -78,10 +84,25 @@ export default class Browser extends View {
     this.h = cx.focus_handle();
     this.address = InputState.new({ placeholder: "Go to…" });
     this.shownUrl = "";
+    this.editing = false;
+    this.area = null;
+    this.sized = null;
+    this.fitting = false;
     this.address.on("submit", (_e, cx) => {
       this.shownUrl = this.address.value();
       const url = normalizeUrl(this.address.value());
       if (url) this.act({ action: "navigate", url }, cx);
+      this.address.blur();
+    });
+    this.address.on("focus", (_e, cx) => {
+      this.editing = true;
+      this.address.set_selected_range({ start: 0, end: this.address.value().length });
+      cx.notify();
+    });
+    this.address.on("blur", (_e, cx) => {
+      this.editing = false;
+      this.address.set_value(this.shownUrl);
+      cx.notify();
     });
     if (checking()) return;
     cx.spawn(async () => { await sweep(SWEEP_MS); });
@@ -237,9 +258,36 @@ export default class Browser extends View {
     this.lastPoint = null;
     this.note = null;
     this.keysShown = false;
+    this.sized = null;
     this.shownUrl = "";
     this.address.set_value("");
     return feed ? feed.stop() : Promise.resolve();
+  }
+
+  fit(cx, wait = true) {
+    const feed = this.feed;
+    if (feed?.phase !== "live" || !shown()) return;
+    const sent = this.sized?.connect === feed.connects ? this.sized : null;
+    const step = resizeStep(viewportFor(this.area), sent, Date.now(), RESIZE_MS);
+    if (step?.send) {
+      const same = sent?.width === step.send.width && sent?.height === step.send.height;
+      const sized = { ...step.send, at: Date.now(), connect: feed.connects, failures: same ? sent.failures : 0 };
+      this.sized = sized;
+      cx.spawn(async (cx) => {
+        try { await feed.command({ action: "viewport", ...step.send }); } catch (e) {
+          if (this.sized !== sized) return;
+          const failures = sized.failures + 1;
+          this.sized = { ...sized, failures, retryAt: Date.now() + retryDelay(failures) };
+          if (failures === 1) this.say(`viewport: ${reason(e)}`, cx);
+        }
+      });
+    } else if (step?.wait && wait && !this.fitting) {
+      this.fitting = true;
+      cx.timer.after(step.wait, (cx) => {
+        this.fitting = false;
+        this.fit(cx);
+      });
+    }
   }
 
   async close() {
@@ -279,7 +327,11 @@ export default class Browser extends View {
     const feed = this.feed;
     const key = targetKey(this.target);
     const message = screenText({ port: state.port, streamError: this.streamErrors.get(key) ?? null, feed: feed && { phase: feed.phase, error: feed.error, empty: feed.frames.empty } });
-    return div().id("browser-screen").relative().flex_1().min_h(0).rounded(8).overflow_hidden().bg(t.surface)
+    return div().id("browser-screen").relative().size_full()
+      .on_size_change((size, cx) => {
+        this.area = size;
+        this.fit(cx);
+      })
       .track_focus(this.h)
       .children(feed ? feed.frames.view() : [])
       .when(Boolean(message), (el) => el.child(h_flex().absolute().inset_0().items_center().justify_center().px(20).text_size(12).text_color(t.dim).child(message)))
@@ -331,19 +383,39 @@ export default class Browser extends View {
       this.address.set_value(next);
       this.shownUrl = next;
     }
-    return v_flex().id("browser-viewer").flex_1().min_h(0).gap(8)
-      .child(h_flex().h(30).flex_none().gap(4).items_center()
-        .child(control(t, "browser-back", "‹", "Back", (cx) => this.act({ action: "back" }, cx)))
-        .child(control(t, "browser-forward", "›", "Forward", (cx) => this.act({ action: "forward" }, cx)))
-        .child(control(t, "browser-reload", "↻", "Reload", (cx) => this.act({ action: "reload" }, cx)))
-        .child(h_flex().id("browser-address").flex_1().min_w(80).h(28).px(10).items_center().rounded(6).border_1().border_color(t.border).bg(t.background)
-          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .child(Input.new(this.address).flex_1().h_full().text_size(12).text_color(t.foreground))))
-      .when(Boolean(this.note), (el) => el.child(note(t, this.note.text, t.blocked)))
-      .when(this.keysShown, (el) => el.child(h_flex().id("browser-keys").h(24).flex_none().px(10).gap(6).items_center().rounded(6).bg(t.solid).text_color(t.solid_foreground).text_size(12)
+    return v_flex().id("browser-viewer").flex_1().min_h(0)
+      .child(h_flex().id("browser-toolbar").flex_none().px(10).py(7).gap(4).items_center()
+        .child(iconButton(t, "browser-back", "back", "Back", (cx) => this.act({ action: "back" }, cx)))
+        .child(iconButton(t, "browser-forward", "forward", "Forward", (cx) => this.act({ action: "forward" }, cx)))
+        .child(this.addressField(t))
+        .child(iconButton(t, "browser-reload", "reload", "Reload", (cx) => this.act({ action: "reload" }, cx))))
+      .when(Boolean(this.note), (el) => el.child(div().mx(10).mb(6).child(note(t, this.note.text, t.blocked))))
+      .when(this.keysShown, (el) => el.child(h_flex().id("browser-keys").h(24).flex_none().mx(8).mb(6).px(10).gap(6).items_center().rounded(6).bg(t.solid).text_color(t.solid_foreground).text_size(12)
         .child(div().font_semibold().child("Keys go to the page"))
         .child(div().truncate().child("Herdr shortcuts too. Click outside the picture to give them back."))))
-      .child(this.screen(t, state));
+      .child(div().id("browser-page").flex_1().min_h(0).mx(8).mb(8).rounded(8).border_1().border_color(t.border).overflow_hidden().bg(t.surface)
+        .child(this.screen(t, state)));
+  }
+
+  addressKey(e, cx) {
+    if (e.key !== "escape" || !this.editing) return;
+    cx.stop_propagation();
+    this.address.blur();
+  }
+
+  addressField(t) {
+    const rest = addressAtRest(this.address.value());
+    return h_flex().id("browser-address").relative().flex_1().min_w(80).h(28).ml(6).px(11).items_center().rounded(8).bg(t.surface)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_key_down((e, cx) => this.addressKey(e, cx))
+      .child(Input.new(this.address).flex_1().h_full().text_size(13).text_color(t.foreground))
+      .when(!this.editing, (el) => el.child(h_flex().id("browser-address-rest").absolute().inset_0().px(11).gap(7).justify_center().items_center().rounded(8).bg(t.surface).cursor_text()
+        .on_mouse_down("left", (_e, cx) => {
+          cx.stop_propagation();
+          this.address.focus();
+        })
+        .when(rest.secure, (el) => el.child(icon("lock").size(13).flex_none().text_color(t.done)))
+        .child(div().min_w(0).truncate().text_size(13).text_color(rest.text ? t.foreground : t.dim).child(rest.text || "Go to…"))));
   }
 
   manual(t, id, intro, command) {
@@ -402,12 +474,7 @@ export default class Browser extends View {
           .when(Boolean(state.command), (el) => el.child(this.handCommand(t, state)))
           .when(Boolean(state.hint), (el) => el.child(this.depsHint(t, state)));
       case "running":
-        return v_flex().flex_1().min_h(0).gap(10)
-          .child(v_flex().gap(2)
-            .child(div().font_semibold().child(state.session))
-            .child(note(t, `on ${machineLabel(state.machine)}`))
-            .when(Boolean(state.url), (el) => el.child(note(t, brief(state.url)))))
-          .child(this.viewer(t, state));
+        return this.viewer(t, state);
     }
   }
 
@@ -426,12 +493,18 @@ export default class Browser extends View {
     if (!settledStart(state, this.starts.get(key))) this.starts.delete(key);
     if (!settledInstall(state, install)) this.installs.delete(machineKey(target?.machine));
     this.sync(state, visible, cx);
+    this.fit(cx, false);
     this.keysShown = this.takesKeys();
     const t = theme();
+    const title = state.kind === "running" ? pageTitle(this.feed?.tabs, this.feed?.url ?? state.url) : "";
     return v_flex().id("browser").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-        .child(div().font_semibold().child("Browser"))
-        .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(target?.address ?? "")))
-      .child(v_flex().id("browser-body").flex_1().min_h(0).p(14).gap(10).child(this.body(t, state)));
+        .child(div().flex_none().font_semibold().child("Browser"))
+        .when(Boolean(title), (el) => el.child(div().flex_none().text_color(t.dim).opacity(0.5).child("/")))
+        .child(div().flex_1().min_w(0).truncate().child(title))
+        .when(Boolean(target?.session), (el) => el.child(h_flex().flex_none().gap(6).items_center().text_size(12).text_color(t.dim)
+          .child(div().child(target.session))
+          .child(div().px(7).py(2).rounded(5).bg(t.surface).text_size(11).text_color(t.muted).child(machineLabel(target.machine))))))
+      .child(v_flex().id("browser-body").flex_1().min_h(0).when(state.kind !== "running", (el) => el.p(14).gap(10)).child(this.body(t, state)));
   }
 }

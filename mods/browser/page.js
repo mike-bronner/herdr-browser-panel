@@ -1,3 +1,5 @@
+import { brief } from "./discovery.js";
+
 export function slug(text) {
   const s = String(text ?? "here");
   let h = 5381;
@@ -146,4 +148,39 @@ export function tunnelArgs(target, localPort, remotePort, log, seconds = 30) {
     "-L", `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
     "--", target, "sleep", String(seconds),
   ];
+}
+
+const MIN_VIEWPORT = 100;
+
+export function viewportFor(size) {
+  const width = Math.round(size?.width), height = Math.round(size?.height);
+  return Number.isFinite(width) && Number.isFinite(height) && width >= MIN_VIEWPORT && height >= MIN_VIEWPORT ? { width, height } : null;
+}
+
+export function resizeStep(want, sent, now, gapMs) {
+  if (!want) return null;
+  const same = sent?.width === want.width && sent?.height === want.height;
+  if (same && sent.retryAt == null) return null;
+  const wait = (same ? sent.retryAt : (sent?.at ?? -Infinity) + gapMs) - now;
+  return wait > 0 ? { wait } : { send: want };
+}
+
+export function retryDelay(failures) {
+  return Math.min(1000 * 2 ** Math.max(failures - 1, 0), 15000);
+}
+
+const MAX_TEXT = 300;
+
+export function addressAtRest(url) {
+  if (typeof url !== "string" || !url.trim()) return { text: "", secure: false };
+  let u = null;
+  try { u = new URL(url); } catch {}
+  if (u?.protocol !== "http:" && u?.protocol !== "https:") return { text: brief(url.trim()).slice(0, MAX_TEXT), secure: false };
+  return { text: u.host.replace(/^www\./i, ""), secure: u.protocol === "https:" };
+}
+
+export function pageTitle(tabs, url) {
+  const active = Array.isArray(tabs) ? tabs.find((tab) => tab?.active) : null;
+  const title = typeof active?.title === "string" ? active.title.replace(/\s+/g, " ").trim().slice(0, MAX_TEXT) : "";
+  return title || addressAtRest(url).text;
 }

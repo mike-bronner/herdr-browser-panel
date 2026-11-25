@@ -100,6 +100,7 @@ test("after a refused connection the loop backs off, notifies connecting once, a
   assert.equal(c.opened, 2);
   assert.equal(feed.phase, "live");
   assert.equal(feed.error, null);
+  assert.equal(feed.connects, 1);
   assert.equal(feed.http, "http://127.0.0.1:55821");
   assert.deepEqual(backoffs, [1000]);
   assert.equal(rejected, null);
@@ -183,4 +184,17 @@ test("a stop that lands while the socket connects closes that socket and ends th
   assert.equal(feed.ws, null);
   assert.equal(feed.http, null);
   assert.equal(cx.notified, 0);
+});
+
+test("a tabs message keeps the session's tab list and redraws, and a malformed one is ignored", () => {
+  const feed = new Feed("p", conn(1), 15);
+  const cx = renderCx();
+  cx.rendering = false;
+  const tabs = [{ active: true, title: "Google", url: "https://www.google.com/" }];
+  feed.handle(JSON.stringify({ type: "tabs", tabs }), cx);
+  assert.deepEqual(feed.tabs, tabs);
+  assert.equal(cx.notified, 1);
+  feed.handle(JSON.stringify({ type: "tabs", tabs: "nope" }), cx);
+  assert.deepEqual(feed.tabs, tabs);
+  assert.equal(cx.notified, 1);
 });

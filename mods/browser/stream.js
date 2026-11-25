@@ -16,6 +16,8 @@ export class Feed {
     this.page = null;
     this.latest = null;
     this.url = null;
+    this.tabs = [];
+    this.connects = 0;
     this.http = null;
     this.ws = null;
     this.queue = [];
@@ -57,6 +59,7 @@ export class Feed {
         }
         this.ws = ws;
         this.phase = "live";
+        this.connects++;
         this.error = null;
         backoff = 1000;
         cx.notify();
@@ -90,6 +93,9 @@ export class Feed {
       this.show(cx);
     } else if (m.type === "url" && typeof m.url === "string") {
       this.url = m.url;
+      cx.notify();
+    } else if (m.type === "tabs" && Array.isArray(m.tabs)) {
+      this.tabs = m.tabs;
       cx.notify();
     }
   }
