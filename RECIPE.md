@@ -29,7 +29,8 @@ radius 10, on `background`. Text is 13px `foreground`. Top to bottom:
     session runs: a close button, styled like a terminal pane header's
     buttons. It is the shipped `mods/pane/close.svg` at 14px in `dim`, with 3px
     padding, radius 4, and it turns `foreground` on a `hover` background. Its
-    tooltip reads "Close this browser session".
+    tooltip reads "Close the side panel". It shows only when the layout has a
+    node with id `panel` that holds the Browser block.
 - **Toolbar**, only while a page shows. A `chrome` band with a 1px `border`
   line under it. It holds a 42px row, 8px side padding, 8px gap, and under it
   the note line and the keys bar when they show:
@@ -67,8 +68,7 @@ padding and one of these:
 - "Terminal <id> has no usable session name." in `blocked`.
 - "No browser for this terminal yet." with a **Start browser** button: 28px
   high, radius 6, `solid` with `solid_foreground` text. Any error shows under
-  it in `blocked`. After the person closes the session, the line reads "You
-  closed this terminal's browser." instead.
+  it in `blocked`.
 - "agent-browser is not installed on <machine>." with an **Install
   agent-browser** button and a line that names the exact commands it runs.
   When no installer fits, or an install failed, it shows the command to run by
@@ -93,25 +93,23 @@ globe icon (`browser.svg`, 14px) and "Browser", 26px high, 12px text, radius
   the panel is hidden. Hiding the panel, hiding the window or focusing
   another terminal closes the stream and its tunnel.
 - **Ends the session when the panel hides.** When the browser block stops
-  showing, because the person clicked the Browser button or switched the stack
-  to Files or Changes, the panel ends the shown terminal's session as the
-  close button does: it stops the stream, then runs `agent-browser --session
+  showing, because the person clicked the Browser button or the header's close
+  button, or switched the stack to Files or Changes, the panel ends the shown
+  terminal's session: it stops the stream, then runs `agent-browser --session
   herdr-<id> close` on the terminal's machine. The panel's 4 second timer
   catches the hide, so it works even if the panel never draws again. It
   closes only a session its last look found. Other terminals' sessions keep
   running, and so does every session while only the window is hidden. A hide
-  leaves no closed mark, so the next show starts a fresh session. A hide or a
-  close button click before a start's open stops the start, so nothing opens.
+  leaves no mark, so the next show starts a fresh session. A hide before a
+  start's open stops the start, so nothing opens.
   A hide during a later step lets that step finish, skips `stream enable` if
   it has not run yet, and then runs one close. This holds up to the start's
   last scan, and also for a start that found the session already running. If
   the open failed, or a remote open hit its 60 s wait, the close runs only
-  when the start's last scan still lists the session. A close button click
-  during a later step runs its close at once. The start lets that step finish
-  and then runs no other agent-browser command. Either way the session gets
-  one close, and the start stores nothing over it. A close the hide could not
-  make shows its error on the next show, and nothing starts. A hide after the
-  close button keeps that button's closed mark.
+  when the start's last scan still lists the session. The session gets one
+  close, and the start stores nothing over it. A close the hide could not
+  make shows its error on the next show, and nothing starts until the person
+  clicks **Start browser**.
 - **Ends a closed terminal's session.** A session never outlives its
   terminal. Every 4 seconds, shown or hidden, the panel lists every terminal
   with `hc ls --all --json`. Herdr keeps a closed terminal in that list with
@@ -183,14 +181,15 @@ globe icon (`browser.svg`, 14px) and "Browser", 26px high, 12px text, radius
   - the last start failed: it shows the error and **Start browser**.
   - the panel started the session itself and it ended within 30 seconds: it
     shows **Start browser**.
-  - the person closed the session with the header's close button: it shows
-    **Start browser** and waits for a click. Other terminals still start
-    their sessions.
-- **Closes the session.** The header's close button stops the stream, which
-  also closes a remote session's ssh tunnel, and then runs `agent-browser
-  --session herdr-<id> close` on the terminal's machine. That ends the
-  session's daemon and its Chrome. The body says "Closing herdr-<id> on
-  <machine>…" until the command returns. A failed close shows its error. After
+- **Closes the panel.** The header's close button runs `layout.hide` with id
+  `panel`, as the tab bar's Browser button does. In a layout with no `panel`
+  node that holds the Browser block, the button does not show, and a click
+  that arrives anyway does nothing. The hide then ends the session: the panel
+  stops the stream, which also closes a remote session's ssh tunnel, and then
+  runs `agent-browser --session herdr-<id> close` on the terminal's machine.
+  That ends the session's daemon and its Chrome. The body says "Closing
+  herdr-<id> on <machine>…" until the command returns. A failed close shows
+  its error, and the terminal waits for **Start browser**. After
   the close the panel runs no other agent-browser command for that session,
   because any such command, `stream status` or `get url` too, starts a new
   daemon and browser. It only reads the session files again.
@@ -265,13 +264,14 @@ props:
 - `frames.js`: frames written as JPEG files and shown as images.
 - Art: `back.svg`, `forward.svg`, `reload.svg`, `lock.svg`, and the shipped
   `mods/pane/close.svg`.
-- `herdr` functions: `exec`, `hc`, `focused`, `spaces`, `panes`, `machines`,
-  `theme`, `window`, `layout`, `settings`, `checking`, `appHome`,
+- `herdr` functions: `exec`, `hc`, `run`, `focused`, `spaces`, `panes`,
+  `machines`, `theme`, `window`, `layout`, `settings`, `checking`, `appHome`,
   `readTextFile`, `watchFolder`. Also `net`, `fs/promises`, `websocket`,
   `fetch` and `localStorage` (`lastUrls`, at most 200 folders, and
   `hiddenUrls`, at most 200 spaces or folders).
 - `hc` commands: `ls --all --json`, `machine ls --json`, `get <name> --json`,
   `run --bg --rm`, `kill <name>`.
+- Commands: `layout.hide`.
 
 **`mods/tabs-browser`**, `mod.json` with `cloned_from` `tabs` 0.1.18: a copy of
 Herdr's shipped `tabs` mod with these changes only:
@@ -298,10 +298,11 @@ before you install:
 
 - **Programs**, on the terminal's machine through `exec`:
   - `agent-browser` (`open`, `stream enable`, `close`, `install`). `close`
-    runs only after the header's close button is clicked. `open` runs through
-    `env`, to set the two stream caps. On a remote machine, `open` runs in a
-    Herdr terminal through `hc run --on <machine>`, which the panel removes
-    with `hc rm` once `open` ends.
+    runs only when the panel hides, its close button included, or a
+    terminal is gone. `open` runs through `env`, to set the two stream caps.
+    On a remote machine, `open` runs in a Herdr terminal through
+    `hc run --on <machine>`, which the panel removes with `hc rm` once `open`
+    ends.
   - `sh` scripts for session discovery and address detection. They use
     standard tools, such as `ss` or `lsof`, `grep`, `sed` and `node -v`.
   - `brew` or `npm`, and `sudo -n true` on Linux, only after the Install

@@ -114,7 +114,7 @@ export function panelState({ target, scan, start, install, close }) {
   const error = closeError ?? (start?.status === "failed" ? start.error
     : start?.status === "started" ? `agent-browser started, but no session named ${target.session} showed up`
     : failed?.error ?? null);
-  return { kind: "start", ...where, at: fresh.at, closed: close?.status === "closed", error, command: start ? null : failed?.command ?? null, hint: !start && install?.status === "installed" ? install.hint ?? null : null };
+  return { kind: "start", ...where, at: fresh.at, error, command: start ? null : failed?.command ?? null, hint: !start && install?.status === "installed" ? install.hint ?? null : null };
 }
 
 export function settledStart(state, start) {
@@ -135,6 +135,19 @@ function visible(node, mod) {
 
 export function blockShown(root, mod) {
   return holds(root, mod) ? visible(root, mod) : null;
+}
+
+function byId(node, id) {
+  if (!node || node.id === id) return node ?? null;
+  for (const child of node.children ?? []) {
+    const found = byId(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+export function panelHolds(root, mod) {
+  return holds(byId(root, "panel"), mod);
 }
 
 const HEADER_PX = 30;
@@ -186,12 +199,8 @@ export function autoStart(state, { visible, shownAt, start, run, close, gone }) 
   return Boolean(visible) && state?.kind === "start" && !state.error && !start && !close && !gone && state.at >= shownAt && !endedQuickly(run);
 }
 
-export function closeShown(hovered, state) {
-  return Boolean(hovered) && state?.kind === "running";
-}
-
-export function startTitle(state) {
-  return state?.closed ? "You closed this terminal's browser." : "No browser for this terminal yet.";
+export function closeShown(hovered, state, root) {
+  return Boolean(hovered) && state?.kind === "running" && panelHolds(root, "browser");
 }
 
 export function trackRun(run, state, now) {

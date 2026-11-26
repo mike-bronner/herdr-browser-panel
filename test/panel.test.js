@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startCommand, remoteStartArgs, remoteStartResult, streamArgs, closeArgs, closeShown, startTitle, feedKey, takesKeys, panelState, settledStart, blockShown, headerHeight, terminalFolder, terminalSpace, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
+import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startCommand, remoteStartArgs, remoteStartResult, streamArgs, closeArgs, closeShown, feedKey, takesKeys, panelState, settledStart, blockShown, panelHolds, headerHeight, terminalFolder, terminalSpace, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
 
 const SPACES = [{ id: "sp-local", machine: null }, { id: "sp-remote", machine: "build_box" }];
 
@@ -268,7 +268,7 @@ test("panelState shows running even while a start is still pending", () => {
 test("panelState offers the start control when the machine answered with no session", () => {
   const other = { ...running, session: "herdr-t7" };
   assert.deepEqual(panelState({ target: remote, scan: { at: 9, sessions: [other], error: null } }),
-    { kind: "start", session: "herdr-t6", machine: "build_box", address: "build_box/t6", at: 9, closed: false, error: null, command: null, hint: null });
+    { kind: "start", session: "herdr-t6", machine: "build_box", address: "build_box/t6", at: 9, error: null, command: null, hint: null });
 });
 
 test("panelState withholds the start control when the machine could not be asked", () => {
@@ -706,44 +706,40 @@ test("panelState shows closing while a close runs, even when the last scan still
   assert.equal(panelState({ target: { ...remote, session: null }, close: closing }).kind, "unsupported");
 });
 
-test("panelState marks the start state as closed after a close, and not otherwise", () => {
-  const after = startState({ close: { status: "closed" } });
-  assert.equal(after.kind, "start");
-  assert.equal(after.closed, true);
-  assert.equal(after.error, null);
-  assert.equal(startState().closed, false);
-  assert.equal(startState({ close: { status: "failed", error: "x" } }).closed, false);
-});
-
 test("panelState shows a failed close's error on the running session and on the start state", () => {
   const close = { status: "failed", error: "agent-browser close failed: daemon busy" };
   const live = panelState({ target: remote, scan: { at: 10, sessions: [running] }, close });
   assert.equal(live.kind, "running");
   assert.equal(live.error, "agent-browser close failed: daemon busy");
   assert.equal(startState({ close }).error, "agent-browser close failed: daemon busy");
-  assert.equal(panelState({ target: remote, scan: { at: 10, sessions: [running] }, close: { status: "closed" } }).error, null);
 });
 
-test("autoStart does not start a terminal whose session the person closed, whatever the close's outcome", () => {
-  for (const close of [{ status: "closing" }, { status: "closed" }, { status: "failed", error: "x" }]) {
+test("autoStart does not start a terminal while a hide's close runs, or after it failed", () => {
+  for (const close of [{ status: "closing" }, { status: "failed", error: "x" }]) {
     assert.equal(autoStart(startState({ close }), ready({ close })), false, close.status);
   }
-  const closed = { status: "closed" };
-  assert.equal(startState({ close: closed }).error, null);
-  assert.equal(autoStart(startState({ close: closed }), ready({ close: closed })), false);
   assert.equal(autoStart(startState(), ready({ close: undefined })), true);
 });
 
-test("closeShown shows the close button only while hovered over a running session", () => {
+test("closeShown shows the close button only while hovered over a running session in a panel it can hide", () => {
   const live = panelState({ target: remote, scan: { at: 10, sessions: [running] } });
-  assert.equal(closeShown(true, live), true);
-  assert.equal(closeShown(false, live), false);
+  const root = panelLayout("browser");
+  assert.equal(closeShown(true, live, root), true);
+  assert.equal(closeShown(false, live, root), false);
+  assert.equal(closeShown(true, live, null), false);
+  assert.equal(closeShown(true, live, { id: "root", type: "row", children: [{ id: "browser", type: "block", content: { mod: "browser" } }] }), false);
   for (const state of [startState(), panelState({ target: remote, scan: undefined }), panelState({ target: remote, close: { status: "closing" } }), panelState({ target: null }), null]) {
-    assert.equal(closeShown(true, state), false, state?.kind);
+    assert.equal(closeShown(true, state, root), false, state?.kind);
   }
 });
 
-test("startTitle says the person closed the browser only after a close", () => {
-  assert.equal(startTitle(startState({ close: { status: "closed" } })), "You closed this terminal's browser.");
-  assert.equal(startTitle(startState()), "No browser for this terminal yet.");
+test("panelHolds finds the panel node by id and checks it holds the mod, at any depth", () => {
+  assert.equal(panelHolds(panelLayout("files"), "browser"), true);
+  assert.equal(panelHolds(panelLayout("browser", true), "browser"), true);
+  assert.equal(panelHolds({ id: "outer", type: "row", children: [{ id: "inner", type: "column", children: [panelLayout("browser")] }] }, "browser"), true);
+  assert.equal(panelHolds(panelLayout("browser"), "changes"), false);
+  assert.equal(panelHolds({ id: "root", type: "row", children: [{ id: "panel", type: "column", children: [] }, { id: "browser", type: "block", content: { mod: "browser" } }] }, "browser"), false);
+  assert.equal(panelHolds({ id: "root", type: "row", children: [{ id: "browser", type: "block", content: { mod: "browser" } }] }, "browser"), false);
+  assert.equal(panelHolds(null, "browser"), false);
+  assert.equal(panelHolds(undefined, "browser"), false);
 });

@@ -91,11 +91,12 @@ terminal.
 
 ### It ends the session when the panel hides
 
-When the human hides the panel, with the Browser button or by switching to
-Files or Changes, the panel closes the session of the terminal it shows, on
-that terminal's machine. Other terminals' sessions keep running. The panel
-keeps the address the page was at, whole, for that Herdr space. When the panel
-shows again, it starts a fresh session there.
+When the human hides the panel, with the Browser button, the close button in
+the panel's header, or by switching to Files or Changes, the panel closes the
+session of the terminal it shows, on that terminal's machine. Other
+terminals' sessions keep running. The panel keeps the address the page was
+at, whole, for that Herdr space. When the panel shows again, it starts a
+fresh session there.
 
 So a session can end while you work, with no command from you. Before you
 run another command with `--session`, check that the panel is shown for your
@@ -167,13 +168,8 @@ with `close`. There are three exceptions:
   and waits for the human.
 - A session that the panel started by itself and that ended less than 30
   seconds later. The panel shows the "Start browser" button.
-- A session the human closed with the close button in the panel's header.
-  The panel shows the "Start browser" button, and starts nothing until the
-  human clicks it.
-
-If the human closed your session, ask before you run another agent-browser
-command with `--session`. Any such command starts a new session, and a
-session the panel did not start is 1x.
+- A session the hide could not close. The panel shows the close's error and
+  the "Start browser" button, and waits for the human.
 
 To end your browser work, leave the session open. Closing it while the panel
 is shown only makes the panel open it again.
@@ -234,11 +230,10 @@ share the page:
 
 If `HC_TERMINAL_ID` is empty, you are not in Herdr. Run agent-browser without
 `--session` there. Do not use `--namespace`, and never run `close --all`. The
-panel may start the session before you do, restarts it if it closes (unless
-the human closed it from the panel: then ask before you use it again), and
-resets its viewport to the panel's size. If you set a viewport, add the scale
-2, as in `set viewport 1280 800 2`, so the page keeps its 2x pixel ratio. The
-human can click and type in the same page. Take a new snapshot before you
-reuse element refs. Never copy what the human types into logs, commits or
-messages.
+panel may start the session before you do, restarts it if it closes, ends it
+when the human hides the panel, and resets its viewport to the panel's size.
+If you set a viewport, add the scale 2, as in `set viewport 1280 800 2`, so
+the page keeps its 2x pixel ratio. The human can click and type in the same
+page. Take a new snapshot before you reuse element refs. Never copy what the
+human types into logs, commits or messages.
 ```

@@ -1,9 +1,9 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, hc, focused, spaces, panes, machines, theme, window, layout, checking, settings } from "herdr";
+import { exec, hc, run, focused, spaces, panes, machines, theme, window, layout, checking, settings } from "herdr";
 import { DISCOVER, parseDiscovery } from "./discovery.js";
 import { installPlan, needsSudoCheck, installStep, installFailure, installDone, outputTail, settledInstall } from "./install.js";
-import { follow, targetKey, panelState, settledStart, blockShown, headerHeight, machineLabel, startCommand, remoteStartArgs, remoteStartResult, streamArgs, closeArgs, closeShown, startTitle, feedKey, takesKeys, findSession, terminalFolder, terminalSpace, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
+import { follow, targetKey, panelState, settledStart, blockShown, headerHeight, machineLabel, startCommand, remoteStartArgs, remoteStartResult, streamArgs, closeArgs, closeShown, panelHolds, feedKey, takesKeys, findSession, terminalFolder, terminalSpace, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
 import { DETECT, parseDetection, herdArgs, parseHerdSites, pickAddress, recall, remember, readMemory, place } from "./address.js";
 import { slug, normalizeUrl, mouseMessage, wheelMessage, keyMessages, textMessages, followUrl, viewportFor, resizeStep, retryDelay, addressAtRest, pageTitle } from "./page.js";
 import { connector } from "./connect.js";
@@ -253,8 +253,8 @@ export default class Browser extends View {
         this.keep(machineKey(target.machine), await discover(target.machine));
       } while (due());
       if (this.launches.get(key) === launch) this.launches.delete(key);
-      if (closed && (launch.end === "button" || closed.status !== "closed")) this.closes.set(key, closed);
-      if (launch.end === "button" || closed || !result) this.starts.delete(key);
+      if (closed && closed.status !== "closed") this.closes.set(key, closed);
+      if (closed || !result) this.starts.delete(key);
       else {
         if (auto && opened && result.status === "started") this.runs.set(key, { at: Date.now() });
         this.starts.set(key, result);
@@ -263,25 +263,10 @@ export default class Browser extends View {
     });
   }
 
-  end(target, cx) {
-    const key = targetKey(target);
-    if (this.closes.get(key)?.status === "closing") return;
-    this.closes.set(key, { status: "closing" });
-    this.streamErrors.delete(key);
-    cx.notify();
-    const launch = this.launches.get(key);
-    if (launch) {
-      launch.end = "button";
-      if (launch.closing) return;
-      launch.closing = true;
-    }
-    cx.spawn(async (cx) => {
-      if (this.feedKey?.startsWith(`${key}|`)) await this.drop();
-      const result = await this.closeSession(target);
-      this.keep(machineKey(target.machine), await discover(target.machine));
-      this.closes.set(key, result);
-      cx.notify();
-    });
+  closePanel(cx) {
+    if (!panelHolds(layout(), "browser")) return;
+    run("layout.hide", { id: "panel" });
+    this.watch(cx);
   }
 
   async closeSession(target) {
@@ -380,8 +365,7 @@ export default class Browser extends View {
       launch.end ??= "hidden";
       return;
     }
-    const before = this.closes.get(key);
-    if (before?.status === "closing" || !found) return;
+    if (this.closes.get(key)?.status === "closing" || !found) return;
     this.starts.delete(key);
     this.streamErrors.delete(key);
     this.closes.set(key, { status: "closing" });
@@ -390,7 +374,6 @@ export default class Browser extends View {
       const result = await this.closeSession(target);
       this.keep(machineKey(target.machine), await discover(target.machine));
       if (result.status !== "closed") this.closes.set(key, result);
-      else if (before?.status === "closed") this.closes.set(key, before);
       else this.closes.delete(key);
       cx.notify();
     });
@@ -664,7 +647,7 @@ export default class Browser extends View {
           .when(Boolean(state.hint), (el) => el.child(this.depsHint(t, state)));
       case "start":
         return v_flex().gap(10)
-          .child(div().child(startTitle(state)))
+          .child(div().child("No browser for this terminal yet."))
           .child(note(t, where))
           .child(button(t, "browser-start", "Start browser", (cx) => this.start(target, cx)))
           .when(Boolean(state.error), (el) => el.child(note(t, state.error, t.blocked)))
@@ -706,7 +689,7 @@ export default class Browser extends View {
         .when(Boolean(target?.session), (el) => el.child(h_flex().flex_none().gap(6).items_center().text_color(t.dim)
           .child(div().max_w(160).truncate().child(target.session))
           .child(div().flex_none().h(18).px(6).flex().items_center().rounded(5).bg(t.surface).text_size(11).text_color(t.muted).child(machineLabel(target.machine)))))
-        .when(closeShown(this.hovered, state), (el) => el.child(headerButton(t, "browser-close", "mods/pane/close.svg", "Close this browser session", (cx) => this.end(target, cx)))))
+        .when(closeShown(this.hovered, state, layout()), (el) => el.child(headerButton(t, "browser-close", "mods/pane/close.svg", "Close the side panel", (cx) => this.closePanel(cx)))))
       .child(v_flex().id("browser-body").flex_1().min_h(0).when(state.kind !== "running", (el) => el.p(14).gap(10)).child(this.body(t, state)));
   }
 }
