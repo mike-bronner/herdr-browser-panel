@@ -199,6 +199,10 @@ export function autoStart(state, { visible, shownAt, start, run, close, gone }) 
   return Boolean(visible) && state?.kind === "start" && !state.error && !start && !close && !gone && state.at >= shownAt && !endedQuickly(run);
 }
 
+export function sessionShown(state) {
+  return state?.kind === "running";
+}
+
 export function closeShown(hovered, state, root) {
   return Boolean(hovered) && state?.kind === "running" && panelHolds(root, "browser");
 }

@@ -3,7 +3,7 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, hc, run, focused, spaces, panes, machines, theme, window, layout, checking, settings } from "herdr";
 import { DISCOVER, parseDiscovery } from "./discovery.js";
 import { installPlan, needsSudoCheck, installStep, installFailure, installDone, outputTail, settledInstall } from "./install.js";
-import { follow, targetKey, panelState, settledStart, blockShown, headerHeight, machineLabel, startCommand, remoteStartArgs, remoteStartResult, streamArgs, closeArgs, closeShown, panelHolds, feedKey, takesKeys, findSession, terminalFolder, terminalSpace, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
+import { follow, targetKey, panelState, settledStart, blockShown, headerHeight, machineLabel, startCommand, remoteStartArgs, remoteStartResult, streamArgs, closeArgs, closeShown, sessionShown, panelHolds, feedKey, takesKeys, findSession, terminalFolder, terminalSpace, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
 import { DETECT, parseDetection, herdArgs, parseHerdSites, pickAddress, recall, remember, readMemory, place } from "./address.js";
 import { slug, normalizeUrl, mouseMessage, wheelMessage, keyMessages, textMessages, followUrl, viewportFor, resizeStep, retryDelay, addressAtRest, pageTitle } from "./page.js";
 import { connector } from "./connect.js";
@@ -686,7 +686,7 @@ export default class Browser extends View {
         .child(div().flex_none().font_semibold().child("Browser"))
         .when(Boolean(title), (el) => el.child(div().flex_none().text_color(t.dim).opacity(0.5).child("/")))
         .child(div().flex_1().min_w(0).truncate().child(title))
-        .when(Boolean(target?.session), (el) => el.child(h_flex().flex_none().gap(6).items_center().text_color(t.dim)
+        .when(sessionShown(state), (el) => el.child(h_flex().flex_none().gap(6).items_center().text_color(t.dim)
           .child(div().max_w(160).truncate().child(target.session))
           .child(div().flex_none().h(18).px(6).flex().items_center().rounded(5).bg(t.surface).text_size(11).text_color(t.muted).child(machineLabel(target.machine)))))
         .when(closeShown(this.hovered, state, layout()), (el) => el.child(headerButton(t, "browser-close", "mods/pane/close.svg", "Close the side panel", (cx) => this.closePanel(cx)))))

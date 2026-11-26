@@ -21,10 +21,11 @@ radius 10, on `background`. Text is 13px `foreground`. Top to bottom:
   - While a page shows: a `/` in `dim` at 50% opacity, then the page title. The
     title is the active tab's title, or the page's host when the title is
     empty. It is cut with an ellipsis when it does not fit.
-  - On the right, when the terminal has a session: the session name
+  - On the right, only while the session runs: the session name
     (`herdr-<terminal id>`) in `dim`, cut with an ellipsis past 160px, then a
     chip with the machine name, or "this computer". The chip is 18px high, 6px
-    side padding, 11px `muted` text on `surface`, radius 5.
+    side padding, 11px `muted` text on `surface`, radius 5. Before the session
+    runs, and while it closes, the header shows only "Browser".
   - At the right end, only while the pointer is over the header and the
     session runs: a close button, styled like a terminal pane header's
     buttons. It is the shipped `mods/pane/close.svg` at 14px in `dim`, with 3px
@@ -442,4 +443,5 @@ applied to `layouts/mine.json`. Run these from a clone of this repo.
   prints 2.
 - A click in the picture shows the keys bar, and typed text reaches the page.
   A click outside gives the keys back.
-- Focusing another terminal shows that terminal's session name in the header.
+- Focusing another terminal whose session runs shows that terminal's session
+  name in the header. Before a session runs, the header shows only "Browser".

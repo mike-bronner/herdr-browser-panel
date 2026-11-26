@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startCommand, remoteStartArgs, remoteStartResult, streamArgs, closeArgs, closeShown, feedKey, takesKeys, panelState, settledStart, blockShown, panelHolds, headerHeight, terminalFolder, terminalSpace, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
+import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startCommand, remoteStartArgs, remoteStartResult, streamArgs, closeArgs, closeShown, sessionShown, feedKey, takesKeys, panelState, settledStart, blockShown, panelHolds, headerHeight, terminalFolder, terminalSpace, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
 
 const SPACES = [{ id: "sp-local", machine: null }, { id: "sp-remote", machine: "build_box" }];
 
@@ -730,6 +730,16 @@ test("closeShown shows the close button only while hovered over a running sessio
   assert.equal(closeShown(true, live, { id: "root", type: "row", children: [{ id: "browser", type: "block", content: { mod: "browser" } }] }), false);
   for (const state of [startState(), panelState({ target: remote, scan: undefined }), panelState({ target: remote, close: { status: "closing" } }), panelState({ target: null }), null]) {
     assert.equal(closeShown(true, state, root), false, state?.kind);
+  }
+});
+
+test("sessionShown shows the session name and chip only while the session runs", () => {
+  assert.equal(sessionShown(panelState({ target: remote, scan: { at: 10, sessions: [running] } })), true);
+  const failedStart = startState({ start: { status: "failed", error: "x" } });
+  const missing = panelState({ target: remote, scan: { at: 10, sessions: [], tools: { agentBrowser: false }, os: "darwin" } });
+  const unreachable = panelState({ target: remote, scan: { at: 10, sessions: [], error: "down" } });
+  for (const state of [startState(), failedStart, panelState({ target: remote, scan: undefined }), panelState({ target: remote, scan: { at: 10, sessions: [] }, start: { status: "starting" } }), panelState({ target: remote, scan: { at: 10, sessions: [] }, install: { status: "installing" } }), missing, unreachable, panelState({ target: remote, close: { status: "closing" } }), panelState({ target: { ...remote, session: null } }), panelState({ target: null }), null]) {
+    assert.equal(sessionShown(state), false, state?.kind);
   }
 });
 
