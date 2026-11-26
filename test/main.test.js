@@ -47,7 +47,7 @@ beforeEach(() => {
         if (detectFails) throw new Error("machine unreachable");
         return { code: 0, stderr: "", stdout: ["home\t/home/me", `folder\t${args[3]}`, "lsof\tp9", "lsof\tf3", "lsof\tn*:3000", "lsofcwd\tp9", "lsofcwd\tfcwd", `lsofcwd\tn${args[3]}`].join("\n") };
       }
-      if (command === "agent-browser" && args[2] === "open") return openResult;
+      if (command === "env" && args.includes("open")) return openResult;
       return { code: 0, stdout: "", stderr: "" };
     },
   };
@@ -66,7 +66,8 @@ function panel(folder) {
   return { b, cx };
 }
 
-const opens = () => calls.filter((c) => c.command === "agent-browser" && c.args[2] === "open").map((c) => c.args);
+const opens = () => calls.filter((c) => c.command === "env" && c.args.includes("open")).map((c) => c.args);
+const opening = (url) => ["AGENT_BROWSER_STREAM_MAX_WIDTH=8192", "AGENT_BROWSER_STREAM_MAX_HEIGHT=8192", "agent-browser", "--session", "herdr-t6", "--args", "--force-device-scale-factor=2", "open", url];
 const streams = () => calls.filter((c) => c.command === "agent-browser" && c.args.join(" ") === "--session herdr-t6 stream enable");
 
 async function drain(cx) {
@@ -80,7 +81,7 @@ test("a shown terminal with no session starts one at the detected address, with 
   const { b, cx } = panel("/home/me/shop");
   b.settle(cx);
   await Promise.all(cx.tasks);
-  assert.deepEqual(opens(), [["--session", "herdr-t6", "open", "http://127.0.0.1:3000/"]]);
+  assert.deepEqual(opens(), [opening("http://127.0.0.1:3000/")]);
   const detect = calls.find((c) => c.command === "sh" && c.args[1] === DETECT);
   assert.deepEqual(detect.args, ["-c", DETECT, "sh", "/home/me/shop"]);
   assert.ok(calls.some((c) => c.command === "agent-browser" && c.args.join(" ") === "--session herdr-t6 stream enable"));
@@ -91,8 +92,18 @@ test("the Start button's start reaches agent-browser open too", async () => {
   const { b, cx } = panel("/home/me/shop");
   b.start(TARGET, cx);
   await Promise.all(cx.tasks);
-  assert.deepEqual(opens(), [["--session", "herdr-t6", "open", "http://127.0.0.1:3000/"]]);
+  assert.deepEqual(opens(), [opening("http://127.0.0.1:3000/")]);
   assert.equal(streams().length, 1);
+});
+
+test("a start on a remote machine runs the scaled launch and the stream there", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  const remote = { address: "build_box/t6", machine: "build_box", id: "t6", session: "herdr-t6", since: 1 };
+  b.start(remote, cx);
+  await drain(cx);
+  const open = calls.filter((c) => c.command === "env" && c.args.includes("open"));
+  assert.deepEqual(open.map((c) => [c.on, c.args]), [["build_box", opening("about:blank")]]);
+  assert.deepEqual(streams().map((c) => c.on), ["build_box"]);
 });
 
 test("a session that appears while the address is found is connected to and not navigated", async () => {
@@ -159,7 +170,7 @@ test("a start whose detection fails opens a blank page", async () => {
   const { b, cx } = panel("/home/me/shop");
   b.start(TARGET, cx);
   await drain(cx);
-  assert.deepEqual(opens(), [["--session", "herdr-t6", "open", "about:blank"]]);
+  assert.deepEqual(opens(), [opening("about:blank")]);
 });
 
 async function autoStartedThenEnded(afterMs) {
@@ -211,7 +222,7 @@ test("a live feed sets the session's viewport to the picture area, rounded to wh
   b.area = { width: 489.6, height: 1000.2 };
   b.fit(cx);
   await drain(cx);
-  assert.deepEqual(sent, [{ action: "viewport", width: 490, height: 1000, deviceScaleFactor: 1 }]);
+  assert.deepEqual(sent, [{ action: "viewport", width: 490, height: 1000, deviceScaleFactor: 0 }]);
 });
 
 test("an unchanged area sends no second viewport", async () => {
@@ -255,7 +266,7 @@ test("a resize under way waits for the gap once, then sends the latest area", as
   Date.now = () => realNow() + 300;
   try { cx.timers[0].fn(cx); } finally { Date.now = realNow; }
   await drain(cx);
-  assert.deepEqual(sent.at(-1), { action: "viewport", width: 520, height: 990, deviceScaleFactor: 1 });
+  assert.deepEqual(sent.at(-1), { action: "viewport", width: 520, height: 990, deviceScaleFactor: 0 });
 });
 
 test("render's own check sends when due but never schedules a wait", async () => {
@@ -466,7 +477,7 @@ test("a new area or a new connect sends at once despite a refused viewport's bac
   const area = refusing();
   await area.at(0);
   await area.at(300, { width: 520, height: 1000 });
-  assert.deepEqual(area.sent.at(-1), { action: "viewport", width: 520, height: 1000, deviceScaleFactor: 1 });
+  assert.deepEqual(area.sent.at(-1), { action: "viewport", width: 520, height: 1000, deviceScaleFactor: 0 });
   assert.equal(area.b.sized.failures, 1);
   const connect = refusing();
   await connect.at(0);
@@ -486,16 +497,16 @@ test("a feed that reconnects and goes live again gets the viewport again", async
   b.fit(cx);
   await drain(cx);
   assert.equal(sent.length, 2);
-  assert.deepEqual(sent[1], { action: "viewport", width: 490, height: 1000, deviceScaleFactor: 1 });
+  assert.deepEqual(sent[1], { action: "viewport", width: 490, height: 1000, deviceScaleFactor: 0 });
 });
 
-test("a narrow area sends its own width at scale 1 on every platform", async () => {
+test("a narrow area sends its own width at scale 0 on every platform", async () => {
   globalThis.host.window = () => ({ visible, platform: "macos" });
   const { b, cx, sent } = sized();
   b.area = { width: 361, height: 1228 };
   b.fit(cx);
   await drain(cx);
-  assert.deepEqual(sent, [{ action: "viewport", width: 361, height: 1228, deviceScaleFactor: 1 }]);
+  assert.deepEqual(sent, [{ action: "viewport", width: 361, height: 1228, deviceScaleFactor: 0 }]);
 });
 
 function staleAt(page, clean = false) {
@@ -519,7 +530,7 @@ test("a stale frame of the size just sent gets the same viewport again after the
     Date.now = realNow;
   }
   assert.equal(sent.length, 4);
-  assert.deepEqual(sent.at(-1), { action: "viewport", width: 361, height: 1228, deviceScaleFactor: 1 });
+  assert.deepEqual(sent.at(-1), { action: "viewport", width: 361, height: 1228, deviceScaleFactor: 0 });
   assert.equal(b.sized.refits, 3);
 });
 
@@ -570,7 +581,7 @@ test("a new area after three resends sends once with the count back at zero, and
     b.area = { width: 300, height: 700 };
     await at(() => b.fit(cx, false));
     assert.equal(sent.length, 5);
-    assert.deepEqual(sent.at(-1), { action: "viewport", width: 300, height: 700, deviceScaleFactor: 1 });
+    assert.deepEqual(sent.at(-1), { action: "viewport", width: 300, height: 700, deviceScaleFactor: 0 });
     assert.equal(b.sized.refits, 0);
     b.feed.picture = staleAt({ width: 300, height: 700 });
     await at(() => b.fit(cx, false));

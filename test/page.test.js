@@ -267,14 +267,65 @@ test("jpegSize gives null for a long buffer with no frame header", () => {
   assert.equal(jpegSize(bytes), null);
 });
 
+const DENSE = { x2: { width: 1200, height: 1600 }, x1: { width: 600, height: 800 } };
+const NARROW = { x2: { width: 1000, height: 1600 }, x1: { width: 500, height: 800 } };
+const NARROW_FIXED = { x2: { width: 840, height: 1600 }, x1: { width: 420, height: 800 } };
+
+for (const [scale, density] of [["x2", 2], ["x1", 1]]) {
+  test(`drawPlan draws a ${scale} frame of the whole page at its own density, with no upscaling`, () => {
+    const picture = pictureOf(DENSE[scale], meta(600, 800));
+    const plan = drawPlan(picture, { width: 600, height: 800 });
+    assert.ok(near(plan, { left: 0, top: 0, width: 600, height: 800, imageWidth: 600, imageHeight: 800 }), JSON.stringify(plan));
+    assert.equal(picture.frame.width / plan.imageWidth, density);
+    assert.equal(picture.clean, true);
+  });
+
+  test(`a ${scale} frame of Chrome's 500 px window is cropped to the page, which fills the box at its own density`, () => {
+    const picture = pictureOf(NARROW[scale], meta(420, 800));
+    assert.deepEqual([picture.page, picture.crop, picture.clean], [{ width: 420, height: 800 }, { width: 420 * density, height: 800 * density }, false]);
+    const plan = drawPlan(picture, { width: 420, height: 800 });
+    assert.ok(near(plan, { left: 0, top: 0, width: 420, height: 800, imageWidth: 500, imageHeight: 800 }), JSON.stringify(plan));
+    assert.equal(picture.frame.width / plan.imageWidth, density);
+  });
+
+  test(`a ${scale} stale frame gets the same viewport again, and the corrected frame ends the resends`, () => {
+    const want = viewportFor({ width: 420, height: 800 });
+    const sent = { ...want, at: 0 };
+    assert.deepEqual(resizeStep(want, sent, 300, 250, pictureOf(NARROW[scale], meta(420, 800))), { send: want, refit: true });
+    const fixed = pictureOf(NARROW_FIXED[scale], meta(420, 800));
+    assert.equal(fixed.clean, true);
+    assert.equal(resizeStep(want, { ...sent, refits: 1 }, 600, 250, fixed), null);
+  });
+
+  test(`a click on a ${scale} frame, whole or cropped, lands on the page point drawn under it`, () => {
+    const box = { width: 420, height: 800 };
+    for (const size of [NARROW[scale], NARROW_FIXED[scale]]) {
+      const picture = pictureOf(size, meta(420, 800));
+      const plan = drawPlan(picture, box);
+      const at = { x: 315, y: 200 };
+      const framePx = (at.x - plan.left) * picture.frame.width / plan.imageWidth;
+      const msg = mouseMessage({ local_position: at, bounds: box }, "mousePressed", "left", picture.page, "Darwin", null);
+      assert.deepEqual([msg.x, msg.y], [315, 200]);
+      assert.equal(Math.round(framePx / density), msg.x, JSON.stringify(size));
+    }
+  });
+
+  test(`a scroll over a ${scale} frame moves the page by CSS pixels, not frame pixels`, () => {
+    const picture = pictureOf(DENSE[scale], meta(600, 800));
+    const e = { local_position: { x: 150, y: 200 }, bounds: { width: 300, height: 400 }, delta: { x: 0, y: -10 } };
+    const msg = wheelMessage(e, picture.page, "Darwin");
+    assert.deepEqual([msg.x, msg.y, msg.deltaY], [300, 400, 20]);
+  });
+}
+
 test("sshFor refuses a target that is not a string", () => {
   assert.throws(() => sshFor({ name: "e", target: 42 }), /not reached by a plain ssh target/);
 });
 
-test("viewportFor takes the picture area in whole CSS pixels, at any width, at scale 1", () => {
-  assert.deepEqual(viewportFor({ width: 489.5, height: 1000.4 }), { width: 490, height: 1000, deviceScaleFactor: 1 });
-  assert.deepEqual(viewportFor({ width: 265, height: 895 }), { width: 265, height: 895, deviceScaleFactor: 1 });
-  assert.deepEqual(viewportFor({ width: 100, height: 100 }), { width: 100, height: 100, deviceScaleFactor: 1 });
+test("viewportFor takes the picture area in whole CSS pixels, at any width, at scale 0 so the page follows the real scale", () => {
+  assert.deepEqual(viewportFor({ width: 489.5, height: 1000.4 }), { width: 490, height: 1000, deviceScaleFactor: 0 });
+  assert.deepEqual(viewportFor({ width: 265, height: 895 }), { width: 265, height: 895, deviceScaleFactor: 0 });
+  assert.deepEqual(viewportFor({ width: 100, height: 100 }), { width: 100, height: 100, deviceScaleFactor: 0 });
 });
 
 test("viewportFor gives nothing for an area too small, missing or not a number", () => {
@@ -294,7 +345,7 @@ test("resizeStep waits out the rest of the gap after a recent send", () => {
 });
 
 test("resizeStep sends the same size again after the gap while the frame of that size is stale, up to three times", () => {
-  const want = { width: 361, height: 1228, deviceScaleFactor: 1 };
+  const want = { width: 361, height: 1228, deviceScaleFactor: 0 };
   const stale = pictureOf({ width: 361, height: 887 }, meta(361, 1228));
   assert.deepEqual(resizeStep(want, { ...want, at: 0 }, 300, 250, stale), { send: want, refit: true });
   assert.deepEqual(resizeStep(want, { ...want, at: 0, refits: 2 }, 100, 250, stale), { wait: 150 });
@@ -302,12 +353,12 @@ test("resizeStep sends the same size again after the gap while the frame of that
 });
 
 test("resizeStep sends nothing again for a whole-page frame shrunk by the stream cap", () => {
-  const want = { width: 361, height: 1228, deviceScaleFactor: 1 };
+  const want = { width: 361, height: 1228, deviceScaleFactor: 0 };
   assert.equal(resizeStep(want, { ...want, at: 0 }, 300, 250, pictureOf({ width: 261, height: 887 }, meta(361, 1228))), null);
 });
 
 test("resizeStep sends nothing again for a clean frame, a stale frame of another size, or no frame", () => {
-  const want = { width: 361, height: 1228, deviceScaleFactor: 1 };
+  const want = { width: 361, height: 1228, deviceScaleFactor: 0 };
   const sent = { ...want, at: 0 };
   for (const picture of [pictureOf({ width: 361, height: 1228 }, meta(361, 1228)), pictureOf({ width: 600, height: 700 }, meta(600, 800)), null]) {
     assert.equal(resizeStep(want, sent, 300, 250, picture), null, JSON.stringify(picture));

@@ -170,7 +170,7 @@ const MAX_REFITS = 3;
 
 export function viewportFor(size) {
   const width = Math.round(size?.width), height = Math.round(size?.height);
-  return Number.isFinite(width) && Number.isFinite(height) && width >= MIN_VIEWPORT && height >= MIN_VIEWPORT ? { width, height, deviceScaleFactor: 1 } : null;
+  return Number.isFinite(width) && Number.isFinite(height) && width >= MIN_VIEWPORT && height >= MIN_VIEWPORT ? { width, height, deviceScaleFactor: 0 } : null;
 }
 
 export function resizeStep(want, sent, now, gapMs, picture = null) {

@@ -85,8 +85,13 @@ globe icon (`browser.svg`, 14px) and "Browser", 26px high, 12px text, radius
   child. Hiding the panel, hiding the window or focusing another terminal
   closes the stream and its tunnel.
 - **Starts the session.** When the focused terminal has no session, the panel
-  starts one with `agent-browser --session herdr-<id> open <address>`, then
-  `stream enable`. The address is the first of:
+  starts one with `env AGENT_BROWSER_STREAM_MAX_WIDTH=8192
+  AGENT_BROWSER_STREAM_MAX_HEIGHT=8192 agent-browser --session herdr-<id>
+  --args --force-device-scale-factor=2 open <address>`, then `stream enable`.
+  The same command runs on a remote machine. The launch argument makes Chrome
+  render at 2x. The two caps let the session's daemon stream frames at that
+  size: it reads them once, when it starts, and without them it cuts frames
+  back to the page's CSS size. The address is the first of:
   1. a server listening on 127.0.0.1, `::1` or all addresses, whose process runs
      inside the terminal's folder (the lowest port wins, and the Vite port in
      `public/hot` is skipped). Not used when the folder is the home folder
@@ -103,10 +108,20 @@ globe icon (`browser.svg`, 14px) and "Browser", 26px high, 12px text, radius
   - the last start failed: it shows the error and **Start browser**.
   - the panel started the session itself and it ended within 30 seconds: it
     shows **Start browser**.
-- **Sets the viewport.** It sends the page area's size, at 1x, each time the
+- **Sets the viewport.** It sends the page area's size with
+  `deviceScaleFactor` 0, which follows Chrome's real scale, each time the
   page shows, the panel is resized (at most every 250 ms) and the stream
   reconnects. This replaces any viewport the agent set. A refused size is sent
-  again after 1 s, doubling to 15 s.
+  again after 1 s, doubling to 15 s. A scale of 1, or none, would keep 2x
+  frames but make the page report a device pixel ratio of 1, so it would pick
+  low-resolution images. So an agent that sets a viewport gives the scale 2,
+  as in `set viewport 1280 800 2`. A bare `set viewport W H` sets the scale
+  to 1 until the panel next sets the viewport.
+- **Draws the frame at its own density.** A frame's size over the page's CSS
+  size, from the frame metadata, is its scale: 2 for a session the panel
+  started, 1 for others. The panel draws the page at its CSS size, so a 2x
+  frame gives one frame pixel per Retina screen pixel. Clicks and scrolls map
+  to CSS page points at either scale.
 - **Shares input.**
   - A left or right click in the picture goes to the page. Dragging works.
   - The scroll wheel over the picture scrolls the page.
@@ -191,7 +206,8 @@ Herdr's shipped `tabs` mod with these changes only:
 before you install:
 
 - **Programs**, on the terminal's machine through `exec`:
-  - `agent-browser` (`open`, `stream enable`, `install`).
+  - `agent-browser` (`open`, `stream enable`, `install`). `open` runs through
+    `env`, to set the two stream caps.
   - `sh` scripts for session discovery and address detection. They use
     standard tools, such as `ss` or `lsof`, `grep`, `sed` and `node -v`.
   - `brew` or `npm`, and `sudo -n true` on Linux, only after the Install
@@ -298,11 +314,14 @@ applied to `layouts/mine.json`. Run these from a clone of this repo.
 - The tabs clone does not follow Herdr's updates. After Herdr updates its
   `tabs` mod, copy the new `main.js`, apply the changes listed in Built from
   again, and update `cloned_from`.
-- Frames are 1x, so the page looks soft on a Retina screen. agent-browser's
-  stream sends frames at the page's CSS size.
+- Only a session the panel starts is 2x. A session started another way, or
+  one that ran before this version, streams 1x frames: the panel shows it
+  correctly but soft. An emulated `deviceScaleFactor` alone never sharpens
+  the stream.
 - Chrome will not make its window narrower than 500px. Below that, a frame
   can show the whole window. The panel draws only the page part, and sends
   the same viewport again, at most 3 times, which makes Chrome correct it.
+  This works the same for 2x and 1x frames.
 - Forward is never dimmed, even with nowhere to go. Back is not dimmed either.
 - The panel turns on streaming only for a session it opens itself. A session
   with no stream port shows "This session has no live view." Whether
@@ -323,6 +342,9 @@ applied to `layouts/mine.json`. Run these from a clone of this repo.
   address if one is found, else a blank page.
 - `agent-browser --session "herdr-$HC_TERMINAL_ID" get url`, run in that
   terminal, prints the address the panel shows.
+- On a Retina screen, the page of a session the panel started is sharp, and
+  `agent-browser --session "herdr-$HC_TERMINAL_ID" eval "devicePixelRatio"`
+  prints 2.
 - A click in the picture shows the keys bar, and typed text reaches the page.
   A click outside gives the keys back.
 - Focusing another terminal shows that terminal's session name in the header.

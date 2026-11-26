@@ -41,10 +41,15 @@ function checked(session) {
   return session;
 }
 
-export function startArgs(session, url = "about:blank") {
+const STREAM_CAP = 8192;
+
+export function startCommand(session, url = "about:blank") {
   const page = url === "about:blank" ? url : openable(url);
   if (!page) throw new Error(`not an address to open: ${url}`);
-  return ["--session", checked(session), "open", page];
+  return ["env", [
+    `AGENT_BROWSER_STREAM_MAX_WIDTH=${STREAM_CAP}`, `AGENT_BROWSER_STREAM_MAX_HEIGHT=${STREAM_CAP}`,
+    "agent-browser", "--session", checked(session), "--args", "--force-device-scale-factor=2", "open", page,
+  ]];
 }
 
 export function streamArgs(session) {

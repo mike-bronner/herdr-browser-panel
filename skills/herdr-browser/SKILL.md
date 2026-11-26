@@ -99,10 +99,24 @@ So your session can already exist, open on the project, before you run your
 first command. Start with `get url` or `snapshot` to see where it is, or
 navigate with `open`.
 
+The panel starts the session at a 2x device scale, so the page is sharp on
+a Retina screen and reports `devicePixelRatio` 2.
+
 ### It connects to a session you start
 
 You can start the session yourself with `open`. The panel then connects to
-it, and does not navigate it.
+it, and does not navigate it. A session you start this way is 1x: the panel
+shows it correctly, but soft. To start it at 2x, as the panel does, give the
+launch argument and both stream caps:
+
+```sh
+AGENT_BROWSER_STREAM_MAX_WIDTH=8192 AGENT_BROWSER_STREAM_MAX_HEIGHT=8192 \
+  agent-browser --session "herdr-$HC_TERMINAL_ID" \
+  --args --force-device-scale-factor=2 open http://localhost:8000
+```
+
+The caps count only when the session starts. Once a session runs, it keeps
+its scale until it closes.
 
 ### It restarts a closed session
 
@@ -131,6 +145,17 @@ viewport you set with `set viewport`. Your viewport holds only until the next
 of those events. Do not depend on a fixed viewport size while the panel is
 shown. Read the size you have with `eval "innerWidth + 'x' + innerHeight"`
 when it matters.
+
+When you set a viewport, give the scale 2:
+
+```sh
+agent-browser --session "herdr-$HC_TERMINAL_ID" set viewport 1280 800 2
+```
+
+A bare `set viewport 1280 800` sets the scale to 1. The panel still gets 2x
+frames, but the page then reports `devicePixelRatio` 1 and loads
+low-resolution images, until the panel next sets the viewport. Check the
+scale with `eval "devicePixelRatio"`.
 
 ### The human shares the page
 
@@ -166,7 +191,9 @@ share the page:
 If `HC_TERMINAL_ID` is empty, you are not in Herdr. Run agent-browser without
 `--session` there. Do not use `--namespace`, and never run `close --all`. The
 panel may start the session before you do, restarts it if it closes, and
-resets its viewport to the panel's size. The human can click and type in the
-same page. Take a new snapshot before you reuse element refs. Never copy what
-the human types into logs, commits or messages.
+resets its viewport to the panel's size. If you set a viewport, add the scale
+2, as in `set viewport 1280 800 2`, so the page keeps its 2x pixel ratio. The
+human can click and type in the same page. Take a new snapshot before you
+reuse element refs. Never copy what the human types into logs, commits or
+messages.
 ```

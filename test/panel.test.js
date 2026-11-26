@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startArgs, streamArgs, feedKey, takesKeys, panelState, settledStart, blockShown, headerHeight, terminalFolder, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
+import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startCommand, streamArgs, feedKey, takesKeys, panelState, settledStart, blockShown, headerHeight, terminalFolder, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
 
 const SPACES = [{ id: "sp-local", machine: null }, { id: "sp-remote", machine: "build_box" }];
 
@@ -104,22 +104,37 @@ test("findSession matches the exact name outside any namespace", () => {
   assert.equal(findSession(undefined, "herdr-t1"), null);
 });
 
-test("startArgs opens a blank page in the named session", () => {
-  assert.deepEqual(startArgs("herdr-t1b"), ["--session", "herdr-t1b", "open", "about:blank"]);
-  assert.deepEqual(startArgs("herdr-t1b", "about:blank"), ["--session", "herdr-t1b", "open", "about:blank"]);
+const opened = (url) => ["env", [
+  "AGENT_BROWSER_STREAM_MAX_WIDTH=8192", "AGENT_BROWSER_STREAM_MAX_HEIGHT=8192",
+  "agent-browser", "--session", "herdr-t1b", "--args", "--force-device-scale-factor=2", "open", url,
+]];
+
+test("startCommand opens a blank page in the named session", () => {
+  assert.deepEqual(startCommand("herdr-t1b"), opened("about:blank"));
+  assert.deepEqual(startCommand("herdr-t1b", "about:blank"), opened("about:blank"));
 });
 
-test("startArgs opens a detected http or https address as one argument", () => {
-  assert.deepEqual(startArgs("herdr-t1b", "https://shop.test"), ["--session", "herdr-t1b", "open", "https://shop.test/"]);
-  assert.deepEqual(startArgs("herdr-t1b", "http://127.0.0.1:3000"), ["--session", "herdr-t1b", "open", "http://127.0.0.1:3000/"]);
+test("startCommand opens a detected http or https address as one argument", () => {
+  assert.deepEqual(startCommand("herdr-t1b", "https://shop.test"), opened("https://shop.test/"));
+  assert.deepEqual(startCommand("herdr-t1b", "http://127.0.0.1:3000"), opened("http://127.0.0.1:3000/"));
 });
 
-test("startArgs refuses an address that is not http, https or the blank page", () => {
-  for (const url of ["javascript:alert(1)", "file:///etc/passwd", "--help", "shop.test", "about:config", null]) assert.throws(() => startArgs("herdr-t1b", url), /not an address to open/, String(url));
+test("startCommand launches Chrome at scale 2, with both stream caps set for the daemon above twice any panel size", () => {
+  const [command, args] = startCommand("herdr-t1b");
+  assert.equal(command, "env");
+  const caps = args.slice(0, args.indexOf("agent-browser"));
+  assert.deepEqual(caps.map((a) => a.split("=")[0]), ["AGENT_BROWSER_STREAM_MAX_WIDTH", "AGENT_BROWSER_STREAM_MAX_HEIGHT"]);
+  for (const cap of caps) assert.ok(Number(cap.split("=")[1]) >= 2 * 3840, cap);
+  assert.deepEqual(args.slice(args.indexOf("--args"), args.indexOf("--args") + 2), ["--args", "--force-device-scale-factor=2"]);
+  assert.ok(args.indexOf("--args") < args.indexOf("open"));
 });
 
-test("startArgs refuses any name that is not a terminal session name", () => {
-  for (const name of ["t1b", "herdr-", "herdr-t 1", "other", null]) assert.throws(() => startArgs(name), /not a terminal session name/, String(name));
+test("startCommand refuses an address that is not http, https or the blank page", () => {
+  for (const url of ["javascript:alert(1)", "file:///etc/passwd", "--help", "shop.test", "about:config", null]) assert.throws(() => startCommand("herdr-t1b", url), /not an address to open/, String(url));
+});
+
+test("startCommand refuses any name that is not a terminal session name", () => {
+  for (const name of ["t1b", "herdr-", "herdr-t 1", "other", null]) assert.throws(() => startCommand(name), /not a terminal session name/, String(name));
 });
 
 const remote = { address: "build_box/t6", machine: "build_box", id: "t6", session: "herdr-t6" };

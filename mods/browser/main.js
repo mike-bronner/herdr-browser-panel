@@ -3,7 +3,7 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, focused, spaces, panes, theme, window, layout, checking, settings } from "herdr";
 import { DISCOVER, parseDiscovery } from "./discovery.js";
 import { installPlan, needsSudoCheck, installStep, installFailure, installDone, outputTail, settledInstall } from "./install.js";
-import { follow, targetKey, panelState, settledStart, blockShown, headerHeight, machineLabel, startArgs, streamArgs, feedKey, takesKeys, findSession, terminalFolder, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
+import { follow, targetKey, panelState, settledStart, blockShown, headerHeight, machineLabel, startCommand, streamArgs, feedKey, takesKeys, findSession, terminalFolder, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
 import { DETECT, parseDetection, herdArgs, parseHerdSites, pickAddress, recall, remember, readMemory } from "./address.js";
 import { slug, normalizeUrl, mouseMessage, wheelMessage, keyMessages, textMessages, followUrl, viewportFor, resizeStep, retryDelay, addressAtRest, pageTitle } from "./page.js";
 import { connector } from "./connect.js";
@@ -188,7 +188,8 @@ export default class Browser extends View {
           result = { status: "started" };
           opened = false;
         } else {
-          const r = await exec("agent-browser", startArgs(target.session, url), { on: target.machine, timeout: 60000 });
+          const [command, args] = startCommand(target.session, url);
+          const r = await exec(command, args, { on: target.machine, timeout: 60000 });
           result = r.code === 0 ? { status: "started" } : { status: "failed", error: r.stderr.trim() || r.stdout.trim() || `exit ${r.code}` };
         }
       } catch (e) {

@@ -28,6 +28,10 @@ on and can click and type in it too.
   headers: it takes the layout's pane header height, or 30px.
 - Fits the page to the panel's width. This overrides any viewport the agent
   set.
+- Shows the page sharp on a Retina screen, for a session the panel starts.
+  Chrome renders it at 2x, and the panel draws each frame pixel as one screen
+  pixel, with no upscaling. The page reports a device pixel ratio of 2, as in
+  a normal browser window.
 - Shares input. Clicks and scrolls go to the page. After a click in the live
   picture, keys go to the page too, and a bar says so. A click outside the
   picture gives the keys back.
@@ -83,12 +87,18 @@ Agents drive the panel's session with `agent-browser --session
 [skills/herdr-browser/SKILL.md](skills/herdr-browser/SKILL.md) for the rules
 and a snippet for a project's `AGENTS.md`.
 
+- Set a viewport with the scale 2, as in `agent-browser --session
+  "herdr-$HC_TERMINAL_ID" set viewport 1280 800 2`. A bare `set viewport W H`
+  drops the page to a device pixel ratio of 1.
+
 ## Limits
 
-- Frames are 1x, so the page looks soft on a Retina screen. agent-browser's
-  stream sends frames at the page's CSS size.
+- A session the panel did not start, or one that ran before this version,
+  streams 1x frames. The panel shows it correctly, but soft on a Retina
+  screen. Close the session to let the panel start it again at 2x.
 - Chrome will not make its window narrower than 500px. The panel handles this
-  by sending the viewport again.
+  by drawing only the page part of the frame and sending the viewport again,
+  at 2x and at 1x.
 - Tested with Herdr 0.1.18 and agent-browser 0.44.0.
 - Forward is never dimmed.
 - The tab bar clone must be redone by hand after Herdr updates its tabs mod.
