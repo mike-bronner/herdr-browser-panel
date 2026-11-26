@@ -325,6 +325,43 @@ test("submitting an empty address sends nothing and gives up the keyboard", asyn
   assert.equal(b.address.focused, false);
 });
 
+test("back, forward and reload each reach the feed's command with that action", async () => {
+  const { b, cx, sent } = sized();
+  for (const action of ["back", "forward", "reload"]) b.act({ action }, cx);
+  await drain(cx);
+  assert.deepEqual(sent, [{ action: "back" }, { action: "forward" }, { action: "reload" }]);
+  assert.equal(b.note, null);
+});
+
+test("an action with no feed sends nothing and does not throw", async () => {
+  const { b, cx, sent } = sized();
+  b.feed = null;
+  b.act({ action: "reload" }, cx);
+  await drain(cx);
+  assert.deepEqual(sent, []);
+  assert.equal(cx.tasks.length, 0);
+});
+
+test("a failed action leaves a note with the action and the error", async () => {
+  const { b, cx, sent } = sized();
+  b.feed.command = async (body) => { sent.push(body); throw new Error("no history"); };
+  b.act({ action: "back" }, cx);
+  await drain(cx);
+  assert.deepEqual(sent, [{ action: "back" }]);
+  assert.equal(b.note.text, "back: no history");
+});
+
+test("an action that fails after the feed was replaced leaves no note", async () => {
+  const { b, cx, sent } = sized();
+  const next = { phase: "live", connects: 1, command: async () => null, stop: async () => {} };
+  b.feed.command = async (body) => { sent.push(body); b.feed = next; throw new Error("socket closed"); };
+  b.act({ action: "reload" }, cx);
+  await drain(cx);
+  assert.deepEqual(sent, [{ action: "reload" }]);
+  assert.equal(b.feed, next);
+  assert.equal(b.note, null);
+});
+
 test("Escape in the address cancels the edit and puts back the page's address", () => {
   const { b, cx } = panel("/home/me/shop");
   let stopped = 0;

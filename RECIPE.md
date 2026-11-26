@@ -21,27 +21,31 @@ radius 10, on `background`. Text is 13px `foreground`. Top to bottom:
   - On the right, when the terminal has a session: the session name
     (`herdr-<terminal id>`) in 12px `dim`, then a chip with the machine name, or
     "this computer". The chip is 11px `muted` text on `surface`, radius 5.
-- **Toolbar**, only while a page shows. 10px side padding, 7px top and
-  bottom, 4px gaps:
-  - Back and Forward: 28x28 buttons with 16px chevron icons in `muted`. They
-    turn `foreground` on a `hover` background, radius 6. Each has a tooltip.
-  - Address field: fills the rest, at least 80px wide, 28px high, radius 8, on
-    `surface`, 13px text. At rest it shows the host without `www.`, centered.
-    An https page puts a 13px lock icon in `done` before the host. With no
-    address it shows "Go to…" in `dim`.
-  - Reload: a 28x28 button like Back.
+- **Toolbar**, only while a page shows. A `chrome` band with a 1px `border`
+  line under it. It holds a 42px row, 8px side padding, 8px gap, and under it
+  the note line and the keys bar when they show:
+  - Back and Forward: a pair of 30x30 buttons at the left, side by side with
+    no gap, with 18px chevron icons in `muted`. They turn `foreground` on a
+    `hover` background, radius 6. Each has a tooltip. Both stay enabled,
+    because agent-browser does not report the page's history.
+  - Address field: centered in the rest of the row, at least 80px and at most
+    640px wide, 30px high, radius 8, on `surface`, 13px text. At rest it shows
+    the host without `www.`, centered. An https page puts a 12px lock icon in
+    `muted` before the host. With no address it shows "Go to…" in `dim`.
+  - Reload: a 22x22 button with a 13px icon inside the field's right end,
+    styled like Back.
 - **Note line**, for 4 seconds after a command fails: 12px text in `blocked`,
   such as `back: not connected`.
 - **Keys bar**, 24px high, while the page takes the keyboard: `solid`
   background, `solid_foreground` 12px text, radius 6. It reads "Keys go to the
   page" in semibold, then "Herdr shortcuts too. Click outside the picture to
   give them back."
-- **Page**: the live picture, 8px in from the sides and bottom, radius 8, 1px
-  `border` line, on `surface`. While the page takes the keyboard, a 2px
-  `accent` line runs round it. The picture keeps the page's own proportions
-  and is centered in this area. Over it, in 12px `dim`, it can say
-  "Connecting…", "Waiting for the page to paint…", "Cannot reach the live
-  view: <reason>" or "This session has no live view."
+- **Page**: the live picture, flush with the panel's sides and bottom, on
+  `surface`. Its bottom corners follow the panel's radius. While the page takes
+  the keyboard, a 2px `accent` line runs round it. The picture keeps the
+  page's own proportions and is centered in this area. Over it, in 12px
+  `dim`, it can say "Connecting…", "Waiting for the page to paint…", "Cannot
+  reach the live view: <reason>" or "This session has no live view."
 
 When no page shows, the toolbar and page give way to a body with 14px
 padding and one of these:

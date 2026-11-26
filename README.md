@@ -22,8 +22,9 @@ on and can click and type in it too.
   session it started by itself ended within 30 seconds. Then it shows a
   **Start browser** button.
 - Offers an **Install agent-browser** button when agent-browser is missing.
-- Has a Safari-style toolbar (Back, Forward, address field, Reload) and a
-  header with the page title, the session and a machine chip.
+- Has a Safari-style toolbar (Back and Forward, then an address field with
+  Reload inside it), the page flush under it, and a header with the page
+  title, the session and a machine chip.
 - Fits the page to the panel's width. This overrides any viewport the agent
   set.
 - Shares input. Clicks and scrolls go to the page. After a click in the live
@@ -103,6 +104,12 @@ npm test
 ```
 
 Run one file with `node --test test/layout.test.js`.
+
+## License
+
+- MIT, copyright 2026 Mike Bronner. See [`LICENSE`](LICENSE).
+- The code adapted from deevs-herdr-kit, named under Credits, keeps its own MIT
+  license and copyright line in `mods/browser/LICENSE-deevs-herdr-kit.txt`.
 
 ## Credits
 

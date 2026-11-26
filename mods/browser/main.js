@@ -55,8 +55,8 @@ function control(t, id, label, tip, onClick) {
     .child(label);
 }
 
-function iconButton(t, id, name, tip, onClick) {
-  return control(t, id, icon(name).size(16), tip, onClick).w(28).h(28).px(0);
+function iconButton(t, id, name, tip, onClick, box = 28, glyph = 16) {
+  return control(t, id, icon(name).size(glyph), tip, onClick).w(box).h(box).min_w(box).px(0);
 }
 
 export default class Browser extends View {
@@ -340,7 +340,7 @@ export default class Browser extends View {
       .track_focus(this.h)
       .children(feed ? feed.frames.view(this.box()) : [])
       .when(Boolean(message), (el) => el.child(h_flex().absolute().inset_0().items_center().justify_center().px(20).text_size(12).text_color(t.dim).child(message)))
-      .when(this.keysShown, (el) => el.child(div().absolute().inset_0().rounded(8).border_2().border_color(t.accent)))
+      .when(this.keysShown, (el) => el.child(div().absolute().inset_0().rounded_b(9).border_2().border_color(t.accent)))
       .on_mouse_down("left", (e, cx) => {
         cx.stop_propagation();
         this.h.focus();
@@ -389,16 +389,17 @@ export default class Browser extends View {
       this.shownUrl = next;
     }
     return v_flex().id("browser-viewer").flex_1().min_h(0)
-      .child(h_flex().id("browser-toolbar").flex_none().px(10).py(7).gap(4).items_center()
-        .child(iconButton(t, "browser-back", "back", "Back", (cx) => this.act({ action: "back" }, cx)))
-        .child(iconButton(t, "browser-forward", "forward", "Forward", (cx) => this.act({ action: "forward" }, cx)))
-        .child(this.addressField(t))
-        .child(iconButton(t, "browser-reload", "reload", "Reload", (cx) => this.act({ action: "reload" }, cx))))
-      .when(Boolean(this.note), (el) => el.child(div().mx(10).mb(6).child(note(t, this.note.text, t.blocked))))
-      .when(this.keysShown, (el) => el.child(h_flex().id("browser-keys").h(24).flex_none().mx(8).mb(6).px(10).gap(6).items_center().rounded(6).bg(t.solid).text_color(t.solid_foreground).text_size(12)
-        .child(div().font_semibold().child("Keys go to the page"))
-        .child(div().truncate().child("Herdr shortcuts too. Click outside the picture to give them back."))))
-      .child(div().id("browser-page").flex_1().min_h(0).mx(8).mb(8).rounded(8).border_1().border_color(t.border).overflow_hidden().bg(t.surface)
+      .child(v_flex().id("browser-chrome").flex_none().bg(t.chrome).border_b(1).border_color(t.border)
+        .child(h_flex().id("browser-toolbar").h(42).px(8).gap(8).items_center()
+          .child(h_flex().id("browser-history").flex_none().items_center()
+            .child(iconButton(t, "browser-back", "back", "Back", (cx) => this.act({ action: "back" }, cx), 30, 18))
+            .child(iconButton(t, "browser-forward", "forward", "Forward", (cx) => this.act({ action: "forward" }, cx), 30, 18)))
+          .child(h_flex().flex_1().min_w(0).justify_center().child(this.addressField(t))))
+        .when(Boolean(this.note), (el) => el.child(div().mx(10).mb(6).child(note(t, this.note.text, t.blocked))))
+        .when(this.keysShown, (el) => el.child(h_flex().id("browser-keys").h(24).flex_none().mx(8).mb(6).px(10).gap(6).items_center().rounded(6).bg(t.solid).text_color(t.solid_foreground).text_size(12)
+          .child(div().font_semibold().child("Keys go to the page"))
+          .child(div().truncate().child("Herdr shortcuts too. Click outside the picture to give them back.")))))
+      .child(div().id("browser-page").flex_1().min_h(0).rounded_b(9).overflow_hidden().bg(t.surface)
         .child(this.screen(t, state)));
   }
 
@@ -410,17 +411,18 @@ export default class Browser extends View {
 
   addressField(t) {
     const rest = addressAtRest(this.address.value());
-    return h_flex().id("browser-address").relative().flex_1().min_w(80).h(28).ml(6).px(11).items_center().rounded(8).bg(t.surface)
+    return h_flex().id("browser-address").relative().flex_1().min_w(80).max_w(640).h(30).pl(11).pr(4).gap(4).items_center().rounded(8).bg(t.surface)
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_key_down((e, cx) => this.addressKey(e, cx))
       .child(Input.new(this.address).flex_1().h_full().text_size(13).text_color(t.foreground))
-      .when(!this.editing, (el) => el.child(h_flex().id("browser-address-rest").absolute().inset_0().px(11).gap(7).justify_center().items_center().rounded(8).bg(t.surface).cursor_text()
+      .when(!this.editing, (el) => el.child(h_flex().id("browser-address-rest").absolute().inset_0().px(30).gap(6).justify_center().items_center().rounded(8).bg(t.surface).cursor_text()
         .on_mouse_down("left", (_e, cx) => {
           cx.stop_propagation();
           this.address.focus();
         })
-        .when(rest.secure, (el) => el.child(icon("lock").size(13).flex_none().text_color(t.done)))
-        .child(div().min_w(0).truncate().text_size(13).text_color(rest.text ? t.foreground : t.dim).child(rest.text || "Go to…"))));
+        .when(rest.secure, (el) => el.child(icon("lock").size(12).flex_none().text_color(t.muted)))
+        .child(div().min_w(0).truncate().text_size(13).text_color(rest.text ? t.foreground : t.dim).child(rest.text || "Go to…"))))
+      .child(iconButton(t, "browser-reload", "reload", "Reload", (cx) => this.act({ action: "reload" }, cx), 22, 13));
   }
 
   manual(t, id, intro, command) {
