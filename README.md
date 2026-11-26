@@ -24,7 +24,8 @@ on and can click and type in it too.
 - Offers an **Install agent-browser** button when agent-browser is missing.
 - Has a Safari-style toolbar (Back and Forward, then an address field with
   Reload inside it), the page flush under it, and a header with the page
-  title, the session and a machine chip.
+  title, the session and a machine chip. The header matches the terminal pane
+  headers: it takes the layout's pane header height, or 30px.
 - Fits the page to the panel's width. This overrides any viewport the agent
   set.
 - Shares input. Clicks and scrolls go to the page. After a click in the live

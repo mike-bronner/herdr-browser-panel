@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startArgs, streamArgs, feedKey, takesKeys, panelState, settledStart, blockShown, terminalFolder, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
+import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startArgs, streamArgs, feedKey, takesKeys, panelState, settledStart, blockShown, headerHeight, terminalFolder, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
 
 const SPACES = [{ id: "sp-local", machine: null }, { id: "sp-remote", machine: "build_box" }];
 
@@ -277,6 +277,61 @@ test("blockShown is false when a hidden ancestor holds the browser block", () =>
 test("blockShown is null when the layout has no browser block", () => {
   assert.equal(blockShown(panelLayout("files"), "other"), null);
   assert.equal(blockShown(null, "browser"), null);
+});
+
+const framed = (pane, stack) => ({
+  id: "root", type: "row", children: [
+    { id: "work", type: "stack", active: stack?.active, children: [
+      ...(stack?.before ?? []),
+      { id: "main", type: "block", content: { tab: "active", pane } },
+    ] },
+    { id: "panel", type: "column", children: [{ id: "browser", type: "block", content: { mod: "browser" } }] },
+  ],
+});
+
+test("headerHeight reads the layout's pane header height", () => {
+  assert.equal(headerHeight(framed({ header: { height: 34, content: { mod: "pane" } } })), 34);
+});
+
+test("headerHeight is 30 when the layout frames no pane header", () => {
+  assert.equal(headerHeight(null), 30);
+  assert.equal(headerHeight(panelLayout("browser")), 30);
+  assert.equal(headerHeight(framed({ header: { content: { mod: "pane" } } })), 30);
+});
+
+test("headerHeight is 30 when the header height is not a positive number", () => {
+  for (const height of [0, -4, "34", NaN, Infinity, null]) assert.equal(headerHeight(framed({ header: { height } })), 30, String(height));
+});
+
+test("headerHeight reads the stack's active child, past hidden ones", () => {
+  const other = { id: "other", type: "block", content: { tab: "active", pane: { header: { height: 50 } } } };
+  assert.equal(headerHeight(framed({ header: { height: 34 } }, { active: "main", before: [other] })), 34);
+  assert.equal(headerHeight(framed({ header: { height: 34 } }, { active: "gone", before: [{ ...other, hidden: true }] })), 34);
+});
+
+const tabPane = (id, height, extra) => ({ id, type: "block", content: { tab: "active", pane: { header: { height } } }, ...extra });
+
+test("headerHeight skips a hidden node under a row", () => {
+  assert.equal(headerHeight({ id: "root", type: "row", children: [tabPane("hid", 50, { hidden: true }), tabPane("main", 34)] }), 34);
+});
+
+test("headerHeight is 30 for an empty stack and for a stack with every child hidden", () => {
+  assert.equal(headerHeight({ id: "work", type: "stack", children: [] }), 30);
+  assert.equal(headerHeight({ id: "work", type: "stack", active: "a", children: [tabPane("a", 50, { hidden: true }), tabPane("b", 44, { hidden: true })] }), 30);
+});
+
+test("headerHeight moves past a first child that frames no pane to a later child", () => {
+  const files = { id: "side", type: "column", children: [{ id: "files", type: "block", content: { mod: "files" } }] };
+  assert.equal(headerHeight({ id: "root", type: "row", children: [files, tabPane("main", 34)] }), 34);
+});
+
+test("headerHeight uses a visible stack child when the active id names a hidden child", () => {
+  assert.equal(headerHeight({ id: "work", type: "stack", active: "hid", children: [tabPane("hid", 50, { hidden: true }), tabPane("main", 34)] }), 34);
+});
+
+test("headerHeight does not take a block with a pane but no tab as the pane frame", () => {
+  const untabbed = { id: "loose", type: "block", content: { pane: { header: { height: 50 } } } };
+  assert.equal(headerHeight({ id: "root", type: "row", children: [untabbed, tabPane("main", 34)] }), 34);
 });
 
 test("feedKey is null for a running state from a scan older than the panel's show time", () => {

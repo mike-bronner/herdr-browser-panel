@@ -100,6 +100,28 @@ export function blockShown(root, mod) {
   return holds(root, mod) ? visible(root, mod) : null;
 }
 
+const HEADER_PX = 30;
+
+function paneFrame(node) {
+  if (!node || node.hidden) return null;
+  if (node.content?.tab && node.content.pane) return node.content.pane;
+  let children = node.children ?? [];
+  if (node.type === "stack") {
+    const shown = children.filter((child) => !child.hidden);
+    children = [shown.find((child) => child.id === node.active) ?? shown[0]];
+  }
+  for (const child of children) {
+    const frame = paneFrame(child);
+    if (frame) return frame;
+  }
+  return null;
+}
+
+export function headerHeight(root) {
+  const height = paneFrame(root)?.header?.height;
+  return Number.isFinite(height) && height > 0 ? height : HEADER_PX;
+}
+
 export function takesKeys(focused, phase) {
   return Boolean(focused) && phase === "live";
 }

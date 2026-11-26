@@ -13,14 +13,18 @@ The panel is one block in the layout's `panel-body` stack, so it takes the
 `panel` column's width and full height. Its frame has a 1px `border` line,
 radius 10, on `background`. Text is 13px `foreground`. Top to bottom:
 
-- **Header**, 42px high, 14px side padding, 1px `border` line under it:
+- **Header**, the same as a terminal pane's header: as high as the layout's
+  pane header (`"pane": { "header": { "height": … } }`), or 30px when the
+  layout sets none. 10px side padding, 8px gap, 12px text, 1px `border` line
+  under it:
   - "Browser" in semibold.
   - While a page shows: a `/` in `dim` at 50% opacity, then the page title. The
     title is the active tab's title, or the page's host when the title is
     empty. It is cut with an ellipsis when it does not fit.
   - On the right, when the terminal has a session: the session name
-    (`herdr-<terminal id>`) in 12px `dim`, then a chip with the machine name, or
-    "this computer". The chip is 11px `muted` text on `surface`, radius 5.
+    (`herdr-<terminal id>`) in `dim`, cut with an ellipsis past 160px, then a
+    chip with the machine name, or "this computer". The chip is 18px high, 6px
+    side padding, 11px `muted` text on `surface`, radius 5.
 - **Toolbar**, only while a page shows. A `chrome` band with a 1px `border`
   line under it. It holds a 42px row, 8px side padding, 8px gap, and under it
   the note line and the keys bar when they show:

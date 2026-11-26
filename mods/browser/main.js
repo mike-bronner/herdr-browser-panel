@@ -3,7 +3,7 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, focused, spaces, panes, theme, window, layout, checking, settings } from "herdr";
 import { DISCOVER, parseDiscovery } from "./discovery.js";
 import { installPlan, needsSudoCheck, installStep, installFailure, installDone, outputTail, settledInstall } from "./install.js";
-import { follow, targetKey, panelState, settledStart, blockShown, machineLabel, startArgs, streamArgs, feedKey, takesKeys, findSession, terminalFolder, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
+import { follow, targetKey, panelState, settledStart, blockShown, headerHeight, machineLabel, startArgs, streamArgs, feedKey, takesKeys, findSession, terminalFolder, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
 import { DETECT, parseDetection, herdArgs, parseHerdSites, pickAddress, recall, remember, readMemory } from "./address.js";
 import { slug, normalizeUrl, mouseMessage, wheelMessage, keyMessages, textMessages, followUrl, viewportFor, resizeStep, retryDelay, addressAtRest, pageTitle } from "./page.js";
 import { connector } from "./connect.js";
@@ -505,13 +505,13 @@ export default class Browser extends View {
     const t = theme();
     const title = state.kind === "running" ? pageTitle(this.feed?.tabs, this.feed?.url ?? state.url) : "";
     return v_flex().id("browser").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
-      .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
+      .child(h_flex().h(headerHeight(layout())).flex_none().px(10).gap(8).items_center().overflow_hidden().border_b(1).border_color(t.border).text_size(12)
         .child(div().flex_none().font_semibold().child("Browser"))
         .when(Boolean(title), (el) => el.child(div().flex_none().text_color(t.dim).opacity(0.5).child("/")))
         .child(div().flex_1().min_w(0).truncate().child(title))
-        .when(Boolean(target?.session), (el) => el.child(h_flex().flex_none().gap(6).items_center().text_size(12).text_color(t.dim)
-          .child(div().child(target.session))
-          .child(div().px(7).py(2).rounded(5).bg(t.surface).text_size(11).text_color(t.muted).child(machineLabel(target.machine))))))
+        .when(Boolean(target?.session), (el) => el.child(h_flex().flex_none().gap(6).items_center().text_color(t.dim)
+          .child(div().max_w(160).truncate().child(target.session))
+          .child(div().flex_none().h(18).px(6).flex().items_center().rounded(5).bg(t.surface).text_size(11).text_color(t.muted).child(machineLabel(target.machine))))))
       .child(v_flex().id("browser-body").flex_1().min_h(0).when(state.kind !== "running", (el) => el.p(14).gap(10)).child(this.body(t, state)));
   }
 }
