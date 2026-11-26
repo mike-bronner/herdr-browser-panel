@@ -15,11 +15,13 @@ on and can click and type in it too.
 - Starts the session when there is none. On a remote machine it starts the
   session in a Herdr terminal there, so the session keeps running, and removes
   that terminal once the start ends. It opens the project's address:
-  1. a server listening from the terminal's folder.
-  2. the last address used in that folder.
-  3. the folder's Herd site, https when Herd holds the certificate.
-  4. `APP_URL` from the project's `.env`.
-  5. `about:blank`.
+  1. the address the page was at when you last hid the panel in that Herdr
+     space, or in that folder when the space is not known.
+  2. a server listening from the terminal's folder.
+  3. the last address used in that folder.
+  4. the folder's Herd site, https when Herd holds the certificate.
+  5. `APP_URL` from the project's `.env`.
+  6. `about:blank`.
 - Restarts a session that closes, except after a failed start, when a
   session it started by itself ended within 30 seconds, or when you closed it.
   Then it shows a **Start browser** button.
@@ -29,6 +31,12 @@ on and can click and type in it too.
   session's daemon and Chrome. That terminal then waits for you to click
   **Start browser**. Other terminals still start their sessions. A failed
   close shows its error.
+- Ends the shown terminal's session when you hide the panel, with the Browser
+  button or by switching to Files or Changes. It runs the same close on the
+  session's own machine. Other terminals' sessions keep running, and hiding
+  only the Herdr window ends nothing. When you show the panel again, it starts
+  a fresh session at the address from the list above. If the close or the
+  start failed, it shows the error and waits for **Start browser**.
 - Offers an **Install agent-browser** button when agent-browser is missing.
 - Has a Safari-style toolbar (Back and Forward, then an address field with
   Reload inside it), the page flush under it, and a header with the page
@@ -75,11 +83,15 @@ To install, ask your agent to follow [RECIPE.md](RECIPE.md). In short:
   for session discovery and address detection, and `ssh` tunnels for remote
   terminals. On a remote machine, `agent-browser open` runs through
   `hc run --on <machine>`. `agent-browser close` runs only when you click the
-  close button. `brew` or `npm` installs run only when you click Install.
+  close button or hide the panel. `brew` or `npm` installs run only when you
+  click Install.
 - **Reads** only the `APP_URL` line of a project's `.env`. To find the
   address it also reads Herd's config and site folder names,
   `public/hot`, agent-browser's session files, and which folder each
   listening server runs in.
+- **Keeps** two address lists in the mod's local storage on this computer:
+  the last address per folder, without its query or fragment, and the address
+  you hid the panel at per Herdr space, whole, query and fragment included.
 - **Writes** live frames to `~/.config/herdr-app/mods/browser-frames/`. Each
   is deleted after use, leftovers are swept after 6 minutes, and a
   `CACHEDIR.TAG` marker stays there. ssh logs go to

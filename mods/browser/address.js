@@ -199,6 +199,10 @@ export function herdUrl({ folder, herd, sites }) {
 const MEMORY = 200;
 const memoryKey = (machine, folder) => `${machine ?? ""}|${folder}`;
 
+export function place(space, folder) {
+  return typeof space === "string" && space ? `space:${space}` : folder ?? null;
+}
+
 export function recall(memory, machine, folder) {
   return folder ? openable(memory?.[memoryKey(machine, folder)]?.url) : null;
 }
@@ -210,9 +214,9 @@ function withoutQuery(url) {
   return u.href;
 }
 
-export function remember(memory, machine, folder, url, at) {
+export function remember(memory, machine, folder, url, at, { whole = false } = {}) {
   const page = openable(url);
-  const safe = page && withoutQuery(page);
+  const safe = page && (whole ? page : withoutQuery(page));
   const key = memoryKey(machine, folder);
   if (!folder || !safe || memory?.[key]?.url === safe) return null;
   const next = { ...(memory ?? {}), [key]: { url: safe, at } };
@@ -233,8 +237,9 @@ export function readMemory(text) {
   }
 }
 
-export function pickAddress({ detected, sites, last }) {
-  return listenerUrl(detected ?? {})
+export function pickAddress({ detected, sites, last, hidden }) {
+  return openable(hidden)
+    ?? listenerUrl(detected ?? {})
     ?? openable(last)
     ?? herdUrl({ folder: detected?.folder, herd: detected?.herd, sites })
     ?? openable(detected?.appUrl)

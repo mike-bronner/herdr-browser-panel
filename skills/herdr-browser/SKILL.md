@@ -86,19 +86,34 @@ do not meet.
 
 The panel acts only for the terminal that has focus, and only while the panel
 is shown. Your session is not touched while the human looks at another
-terminal or hides the panel.
+terminal.
+
+### It ends the session when the panel hides
+
+When the human hides the panel, with the Browser button or by switching to
+Files or Changes, the panel closes the session of the terminal it shows, on
+that terminal's machine. Other terminals' sessions keep running. The panel
+keeps the address the page was at, whole, for that Herdr space. When the panel
+shows again, it starts a fresh session there.
+
+So a session can end while you work, with no command from you. Before you
+run another command with `--session`, check that the panel is shown for your
+terminal, or ask the human. Any agent-browser command other than `close`
+starts a new session, and a session the panel did not start is 1x.
 
 ### It starts the session
 
 When the panel is shown and your terminal has no session, the panel starts
 one. It opens the first of these that it finds:
 
-1. A server that listens from your terminal's folder.
-2. The last address the panel saw in that folder.
-3. The folder's Herd site.
-4. `APP_URL` from the nearest `.env` in the folder or a folder above it,
+1. The address the page was at when the panel last hid in your terminal's
+   Herdr space.
+2. A server that listens from your terminal's folder.
+3. The last address the panel saw in that folder.
+4. The folder's Herd site.
+5. `APP_URL` from the nearest `.env` in the folder or a folder above it,
    below your home folder.
-5. `about:blank`.
+6. `about:blank`.
 
 So your session can already exist, open on the project, before you run your
 first command. Start with `get url` or `snapshot` to see where it is, or
@@ -127,9 +142,9 @@ its scale until it closes.
 
 If the session closes while the panel is shown for your terminal, the panel
 starts it again within seconds, at the address from the list above. If it
-closes while the panel is hidden, the panel starts it when it is next shown
-for your terminal. This includes a session you close with `close`. There are
-three exceptions:
+closes while the panel is hidden, or the hide closed it, the panel starts it
+when it is next shown for your terminal. This includes a session you close
+with `close`. There are three exceptions:
 
 - A start that failed. The panel shows the error and a "Start browser" button,
   and waits for the human.

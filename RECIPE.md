@@ -91,6 +91,26 @@ globe icon (`browser.svg`, 14px) and "Browser", 26px high, 12px text, radius
   only while the window is visible and the browser is the stack's shown
   child. Hiding the panel, hiding the window or focusing another terminal
   closes the stream and its tunnel.
+- **Ends the session when the panel hides.** When the browser block stops
+  showing, because the person clicked the Browser button or switched the stack
+  to Files or Changes, the panel ends the shown terminal's session as the
+  close button does: it stops the stream, then runs `agent-browser --session
+  herdr-<id> close` on the terminal's machine. The panel's 4 second timer
+  catches the hide, so it works even if the panel never draws again. It
+  closes only a session its last look found. Other terminals' sessions keep
+  running, and so does every session while only the window is hidden. A hide
+  leaves no closed mark, so the next show starts a fresh session. A hide or a
+  close button click before a start's open stops the start, so nothing opens.
+  A hide during a later step lets that step finish, skips `stream enable` if
+  it has not run yet, and then runs one close. This holds up to the start's
+  last scan, and also for a start that found the session already running. If
+  the open failed, or a remote open hit its 60 s wait, the close runs only
+  when the start's last scan still lists the session. A close button click
+  during a later step runs its close at once. The start lets that step finish
+  and then runs no other agent-browser command. Either way the session gets
+  one close, and the start stores nothing over it. A close the hide could not
+  make shows its error on the next show, and nothing starts. A hide after the
+  close button keeps that button's closed mark.
 - **Starts the session.** When the focused terminal has no session, the panel
   starts one with `env AGENT_BROWSER_STREAM_MAX_WIDTH=8192
   AGENT_BROWSER_STREAM_MAX_HEIGHT=8192 agent-browser --session herdr-<id>
@@ -110,16 +130,20 @@ globe icon (`browser.svg`, 14px) and "Browser", 26px high, 12px text, radius
   session's daemon stream frames at that size: it reads them once, when it
   starts, and without them it cuts frames back to the page's CSS size. The
   address is the first of:
-  1. a server listening on 127.0.0.1, `::1` or all addresses, whose process runs
+  1. the address the page was at when the panel last hid in the terminal's
+     Herdr space, or in its folder when the space is not known. It is kept
+     whole, query and fragment included, in the mod's local storage on this
+     computer, and it survives a restart of Herdr.
+  2. a server listening on 127.0.0.1, `::1` or all addresses, whose process runs
      inside the terminal's folder (the lowest port wins, and the Vite port in
      `public/hot` is skipped). Not used when the folder is the home folder
      or above it.
-  2. the last address the panel saw in that folder, without its query or
+  3. the last address the panel saw in that folder, without its query or
      fragment.
-  3. the folder's Herd site, https when Herd holds a certificate for it.
-  4. `APP_URL` from the nearest `.env`, from the folder up to below the home
+  4. the folder's Herd site, https when Herd holds a certificate for it.
+  5. `APP_URL` from the nearest `.env`, from the folder up to below the home
      folder, if it is http or https.
-  5. `about:blank`.
+  6. `about:blank`.
 - **Joins an existing session.** A session that already runs is connected to,
   never navigated.
 - **Restarts a closed session**, at the address above, unless:
@@ -209,7 +233,8 @@ props:
 - `herdr` functions: `exec`, `hc`, `focused`, `spaces`, `panes`, `theme`,
   `window`, `layout`, `settings`, `checking`, `appHome`, `readTextFile`,
   `watchFolder`. Also `net`, `fs/promises`, `websocket`, `fetch` and
-  `localStorage` (`lastUrls`, at most 200 folders).
+  `localStorage` (`lastUrls`, at most 200 folders, and `hiddenUrls`, at most
+  200 spaces or folders).
 - `hc` commands: `machine ls --json`, `get <name> --json`, `run --bg --rm`,
   `kill <name>`.
 

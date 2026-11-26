@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startCommand, remoteStartArgs, remoteStartResult, streamArgs, closeArgs, closeShown, startTitle, feedKey, takesKeys, panelState, settledStart, blockShown, headerHeight, terminalFolder, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
+import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startCommand, remoteStartArgs, remoteStartResult, streamArgs, closeArgs, closeShown, startTitle, feedKey, takesKeys, panelState, settledStart, blockShown, headerHeight, terminalFolder, terminalSpace, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
 
 const SPACES = [{ id: "sp-local", machine: null }, { id: "sp-remote", machine: "build_box" }];
 
@@ -535,6 +535,27 @@ test("terminalFolder reads the pane's folder when focus has moved off the termin
   const panes = [{ terminal: "t1", cwd: "/a" }, { terminal: "build_box/t6", cwd: "/srv/shop/app" }];
   assert.equal(terminalFolder(remote, { terminal: null, cwd: null }, panes), "/srv/shop/app");
   assert.equal(terminalFolder(remote, null, panes), "/srv/shop/app");
+});
+
+test("terminalSpace reads the space of the focused terminal", () => {
+  assert.equal(terminalSpace(remote, { space: "build_box/s2", terminal: "build_box/t6" }, [], []), "build_box/s2");
+});
+
+test("terminalSpace finds the space holding the terminal's tab when focus has moved off the terminal", () => {
+  const panes = [{ terminal: "t1", tab: "a1" }, { terminal: "build_box/t6", tab: "build_box/b2" }];
+  const spaces = [{ id: "s1", tabs: [{ id: "a1" }] }, { id: "build_box/s2", tabs: [{ id: "build_box/b1" }, { id: "build_box/b2" }] }];
+  assert.equal(terminalSpace(remote, { space: "s1", terminal: null }, panes, spaces), "build_box/s2");
+  assert.equal(terminalSpace(remote, { space: "", terminal: "build_box/t6" }, panes, spaces), "build_box/s2");
+  assert.equal(terminalSpace(remote, null, panes, spaces), "build_box/s2");
+});
+
+test("terminalSpace is null with no target, no pane, or no space holding the pane's tab", () => {
+  const spaces = [{ id: "s1", tabs: [{ id: "a1" }] }, { id: "s3" }];
+  assert.equal(terminalSpace(null, { space: "s1", terminal: "t1" }, [], spaces), null);
+  assert.equal(terminalSpace(remote, { space: "s1", terminal: "t1" }, [{ terminal: "t1", tab: "a1" }], spaces), null);
+  assert.equal(terminalSpace(remote, null, [{ terminal: "build_box/t6", tab: "gone" }], spaces), null);
+  assert.equal(terminalSpace(remote, null, [{ terminal: "build_box/t6", tab: null }], [{ id: "s4", tabs: [{ id: null }] }]), null);
+  assert.equal(terminalSpace(remote, null, undefined, undefined), null);
 });
 
 test("terminalFolder is null with no target or no folder known", () => {

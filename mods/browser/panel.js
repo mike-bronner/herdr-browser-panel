@@ -169,6 +169,13 @@ export function terminalFolder(target, focus, panes) {
   return typeof cwd === "string" && cwd ? cwd : null;
 }
 
+export function terminalSpace(target, focus, panes, spaces) {
+  if (!target) return null;
+  if (focus?.terminal === target.address && focus.space) return focus.space;
+  const tab = panes?.find((p) => p.terminal === target.address)?.tab;
+  return (tab && spaces?.find((s) => s.tabs?.some((t) => t.id === tab))?.id) || null;
+}
+
 const QUICK_END_MS = 30000;
 
 export function endedQuickly(run) {

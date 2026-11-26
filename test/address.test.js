@@ -4,7 +4,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DETECT, HERD_SITES, openable, appUrl, inside, loopback, herdConfig, parseDetection, herdArgs, parseHerdSites, listenerUrl, herdUrl, recall, remember, readMemory, pickAddress } from "../mods/browser/address.js";
+import { DETECT, HERD_SITES, openable, appUrl, inside, loopback, herdConfig, parseDetection, herdArgs, parseHerdSites, listenerUrl, herdUrl, recall, remember, readMemory, pickAddress, place } from "../mods/browser/address.js";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "browser-address-")));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -291,6 +291,35 @@ test("pickAddress opens Herd's site next, then APP_URL, then a blank page", () =
   assert.equal(pickAddress({ detected: shopDetected({ listeners: [], appUrl: null }), sites: null, last: null }), "about:blank");
   assert.equal(pickAddress({ detected: {}, sites: null, last: null }), "about:blank");
   assert.equal(pickAddress({}), "about:blank");
+});
+
+test("pickAddress opens the address the panel was hidden at first, ahead of a listening server", () => {
+  assert.equal(pickAddress({ detected: shopDetected(), sites: shopSites, last: "https://last.test/", hidden: "https://shop.test/cart" }), "https://shop.test/cart");
+});
+
+test("pickAddress falls through an unsafe hidden address to the listening server", () => {
+  for (const hidden of ["javascript:alert(1)", "file:///etc/passwd", "https://me:pw@shop.test/", null, undefined]) {
+    assert.equal(pickAddress({ detected: shopDetected(), sites: shopSites, last: null, hidden }), "http://127.0.0.1:3000", String(hidden));
+  }
+});
+
+test("remember keeps the whole address when asked, and still refuses one it may not open", () => {
+  const m = remember({}, null, PROJECT, "https://shop.test/cart?token=abc#x", 1, { whole: true });
+  assert.equal(recall(m, null, PROJECT), "https://shop.test/cart?token=abc#x");
+  assert.equal(remember(m, null, PROJECT, "https://shop.test/cart?token=abc#x", 2, { whole: true }), null);
+  assert.equal(remember(m, null, PROJECT, "https://me:pw@shop.test/", 2, { whole: true }), null);
+  assert.equal(remember(m, null, PROJECT, "javascript:alert(1)", 2, { whole: true }), null);
+});
+
+test("place keys a Herdr space apart from any folder, and falls back to the folder with no space", () => {
+  assert.equal(place("s1", "/home/me/shop"), "space:s1");
+  assert.equal(place("build_box/s2", null), "space:build_box/s2");
+  assert.equal(place(null, "/home/me/shop"), "/home/me/shop");
+  assert.equal(place("", "/home/me/shop"), "/home/me/shop");
+  assert.equal(place(undefined, undefined), null);
+  const m = remember({}, null, place("s1", "/home/me/shop"), "https://shop.test/a?token=abc#x", 1, { whole: true });
+  assert.equal(recall(m, null, place("s1", null)), "https://shop.test/a?token=abc#x");
+  assert.equal(recall(m, null, place(null, "/home/me/shop")), null);
 });
 
 test("pickAddress falls through an unsafe last address and an unsafe APP_URL", () => {

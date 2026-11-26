@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 
 const stubs = {
-  "gpui-kit": "export class View {} export const div = () => null; export const image = () => null; export const svg = () => null;",
-  "gpui-base": "export const v_flex = () => null; export const h_flex = () => null; export const Input = { new: () => null }; export const InputState = { new: () => { let v = ''; const handlers = {}; const s = { handlers, range: null, focused: false, on(name, h) { handlers[name] = h; }, value: () => v, set_value(x) { v = x; }, set_selected_range(r) { s.range = r; }, focus() { if (s.focused) return; s.focused = true; handlers.focus?.({}, { notify() {} }); }, blur() { if (!s.focused) return; s.focused = false; handlers.blur?.({}, { notify() {} }); } }; return s; } };",
+  "gpui-kit": "const c = new Proxy(function () {}, { get: (_t, k) => k === 'then' ? undefined : () => c, apply: () => c }); export class View {} export const div = () => c; export const image = () => c; export const svg = () => c;",
+  "gpui-base": "const c = new Proxy(function () {}, { get: (_t, k) => k === 'then' ? undefined : () => c, apply: () => c }); export const v_flex = () => c; export const h_flex = () => c; export const Input = { new: () => c }; export const InputState = { new: () => { let v = ''; const handlers = {}; const s = { handlers, range: null, focused: false, on(name, h) { handlers[name] = h; }, value: () => v, set_value(x) { v = x; }, set_selected_range(r) { s.range = r; }, focus() { if (s.focused) return; s.focused = true; handlers.focus?.({}, { notify() {} }); }, blur() { if (!s.focused) return; s.focused = false; handlers.blur?.({}, { notify() {} }); } }; return s; } };",
   herdr: ["exec", "focused", "spaces", "panes", "theme", "window", "layout", "checking", "settings", "hc", "appHome", "readTextFile", "watchFolder"]
     .map((name) => `export const ${name} = (...a) => globalThis.host.${name}(...a);`).join("\n"),
   websocket: "export const WebSocket = { connect: async () => { throw new Error('no socket'); } };",
@@ -899,4 +899,591 @@ test("after one terminal's close, another terminal with no session still auto-st
   b.settle(cx);
   await drain(cx);
   assert.deepEqual(opens().map((args) => args[4]), ["herdr-t7"]);
+});
+
+const panelLayout = ({ hidden = false, active = "browser" } = {}) => ({
+  id: "root", type: "row",
+  children: [
+    { id: "terminals", type: "block", content: { mod: "terminals" } },
+    { id: "panel", type: "column", hidden, children: [{ id: "panel-body", type: "stack", active, children: [
+      { id: "files", type: "block", content: { mod: "files" } },
+      { id: "changes", type: "block", content: { mod: "changes" } },
+      { id: "browser", type: "block", content: { mod: "browser" } },
+    ] }] },
+  ],
+});
+const OTHER = { address: "t7", machine: null, id: "t7", session: "herdr-t7", since: 1 };
+const listed = (url = "https://agent.test/", session = "herdr-t6") => ({ session, namespace: null, pid: 77, port: null, engine: "chrome", url });
+let shownLayout;
+
+function hideWith(b, cx, hidden) {
+  shownLayout = panelLayout();
+  globalThis.host.layout = () => shownLayout;
+  b.watch(cx);
+  shownLayout = panelLayout(hidden);
+  b.watch(cx);
+}
+
+function running(b, target = TARGET, url = "https://agent.test/") {
+  sessions = [{ session: target.session, url }, { session: "herdr-t7", url: "https://other.test/" }];
+  b.keep(machineKeyOf(target), { at: Date.now(), os: "Darwin", tools: { agentBrowser: true }, sessions: [listed(url, target.session), listed("https://other.test/", "herdr-t7")], error: null });
+}
+const machineKeyOf = (target) => target.machine ?? "";
+
+for (const [how, hidden] of [["with the Browser button", { hidden: true }], ["by switching to Files", { active: "files" }], ["by switching to Changes", { active: "changes" }]]) {
+  test(`hiding the panel ${how} stops the feed, then closes only the shown terminal's session, and leaves no closed mark`, async () => {
+    const { b, cx } = panel("/home/me/shop");
+    running(b);
+    const feed = showing(b, TARGET);
+    hideWith(b, cx, hidden);
+    assert.equal(b.current().kind, "closing");
+    await drain(cx);
+    assert.deepEqual(events, ["stop", "close"]);
+    assert.equal(feed.stopped, 1);
+    assert.equal(b.feed, null);
+    assert.deepEqual(agentBrowser().map((c) => [c.args, c.on]), [[["--session", "herdr-t6", "close"], null]]);
+    assert.equal(b.closes.has(targetKey(TARGET)), false);
+    assert.equal(b.current().kind, "start");
+    assert.equal(b.current().closed, false);
+  });
+}
+
+test("hiding the panel on a remote terminal closes its session on that machine", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  b.target = REMOTE;
+  running(b, REMOTE);
+  const feed = showing(b, REMOTE);
+  hideWith(b, cx, { hidden: true });
+  await drain(cx);
+  assert.equal(feed.stopped, 1);
+  assert.deepEqual(closes().map((c) => [c.args, c.on]), [[["--session", "herdr-t6", "close"], "build_box"]]);
+  assert.deepEqual(hcCalls, []);
+  assert.equal(b.closes.has(targetKey(REMOTE)), false);
+});
+
+test("hiding the panel leaves a feed of another terminal running and does not close that terminal's session", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  running(b);
+  const feed = showing(b, OTHER);
+  hideWith(b, cx, { hidden: true });
+  await drain(cx);
+  assert.equal(feed.stopped, 0);
+  assert.deepEqual(closes().map((c) => c.args[1]), ["herdr-t6"]);
+});
+
+test("a copy whose block is hidden when it first looks, or stays shown, closes nothing", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  running(b);
+  shownLayout = panelLayout({ hidden: true });
+  globalThis.host.layout = () => shownLayout;
+  b.watch(cx);
+  b.watch(cx);
+  shownLayout = panelLayout();
+  b.watch(cx);
+  b.watch(cx);
+  globalThis.host.layout = () => null;
+  b.watch(cx);
+  await drain(cx);
+  assert.deepEqual(agentBrowser(), []);
+});
+
+test("hiding the panel when the scan lists no session for the terminal runs no agent-browser command", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  hideWith(b, cx, { hidden: true });
+  await drain(cx);
+  assert.deepEqual(agentBrowser(), []);
+  assert.equal(b.closes.has(targetKey(TARGET)), false);
+});
+
+test("hiding the panel for a terminal with no usable session name does nothing", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  b.target = { address: "x/y/z", machine: "x", id: "y/z", session: null, since: 1 };
+  hideWith(b, cx, { hidden: true });
+  await drain(cx);
+  assert.deepEqual(calls, []);
+});
+
+test("hiding the panel while the close button's close runs closes once, and keeps its closed mark", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  running(b);
+  showing(b, TARGET);
+  b.end(TARGET, cx);
+  hideWith(b, cx, { hidden: true });
+  await drain(cx);
+  assert.equal(closes().length, 1);
+  assert.deepEqual(b.closes.get(targetKey(TARGET)), { status: "closed" });
+});
+
+test("hiding the panel over a session revived after the close button keeps the closed mark once it closes", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  b.closes.set(targetKey(TARGET), { status: "closed" });
+  running(b);
+  hideWith(b, cx, { hidden: true });
+  assert.equal(b.current().kind, "closing");
+  await drain(cx);
+  assert.equal(closes().length, 1);
+  assert.deepEqual(b.closes.get(targetKey(TARGET)), { status: "closed" });
+});
+
+test("a close the hide could not make shows its error on the next show and starts nothing", async () => {
+  closeResult = async () => ({ code: 1, stdout: "", stderr: "daemon busy\n" });
+  const { b, cx } = panel("/home/me/shop");
+  running(b);
+  hideWith(b, cx, { hidden: true });
+  await drain(cx);
+  assert.deepEqual(b.closes.get(targetKey(TARGET)), { status: "failed", error: "agent-browser close failed: daemon busy" });
+  sessions = [];
+  b.keep("", { at: Date.now() + 1, os: "Darwin", tools: { agentBrowser: true }, sessions: [], error: null });
+  b.settle(cx);
+  await drain(cx);
+  assert.equal(b.current().error, "agent-browser close failed: daemon busy");
+  assert.deepEqual(opens(), []);
+});
+
+test("showing the panel again after a hide starts a fresh session, even one auto-started less than 30 seconds before", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  b.settle(cx);
+  await drain(cx);
+  running(b);
+  b.settle(cx);
+  assert.ok(b.runs.has(targetKey(TARGET)));
+  hideWith(b, cx, { hidden: true });
+  await drain(cx);
+  assert.equal(b.runs.has(targetKey(TARGET)), false);
+  shownLayout = panelLayout();
+  b.shownAt = Date.now();
+  b.keep("", { at: Date.now(), os: "Darwin", tools: { agentBrowser: true }, sessions: [], error: null });
+  b.settle(cx);
+  await drain(cx);
+  assert.equal(opens().length, 2);
+  assert.equal(b.starts.get(targetKey(TARGET)).status, "started");
+});
+
+test("a hide while a local auto-start's open is pending closes the session once the open returns, enables no stream, and probes nothing after", async () => {
+  const open = pending();
+  openResult = open.promise;
+  const { b, cx } = panel("/home/me/shop");
+  b.settle(cx);
+  await until(() => opens().length === 1);
+  b.keep("", { at: Date.now(), os: "Darwin", tools: { agentBrowser: true }, sessions: [listed()], error: null });
+  b.settle(cx);
+  hideWith(b, cx, { hidden: true });
+  assert.deepEqual(closes(), []);
+  open.release({ code: 0, stdout: "", stderr: "" });
+  await drain(cx);
+  assert.deepEqual(agentBrowser().map((c) => [c.args, c.on]), [[["--session", "herdr-t6", "close"], null]]);
+  assert.equal(calls.at(-1).args[1], DISCOVER);
+  assert.equal(b.starts.has(targetKey(TARGET)), false);
+  assert.equal(b.runs.has(targetKey(TARGET)), false);
+  assert.equal(b.closes.has(targetKey(TARGET)), false);
+  assert.equal(b.launches.has(targetKey(TARGET)), false);
+  assert.equal(b.current().kind, "start");
+  shownLayout = panelLayout();
+  b.shownAt = 0;
+  b.settle(cx);
+  await drain(cx);
+  assert.equal(opens().length, 2);
+});
+
+test("a hide while a remote start's open is pending closes the session on that machine once the open returns", async () => {
+  const open = pending();
+  const answer = await runResult();
+  runResult = () => open.promise;
+  const { b, cx } = panel("/home/me/shop");
+  b.target = REMOTE;
+  b.start(REMOTE, cx, true);
+  await until(() => hcCalls.length === 1);
+  hideWith(b, cx, { hidden: true });
+  open.release(answer);
+  await drain(cx);
+  assert.deepEqual(hcCalls.map((args) => args[0]), ["run", "rm"]);
+  assert.deepEqual(agentBrowser().map((c) => [c.args, c.on]), [[["--session", "herdr-t6", "close"], "build_box"]]);
+  assert.equal(b.starts.has(targetKey(REMOTE)), false);
+});
+
+test("a hide while stream enable is pending closes the session after the stream call returns", async () => {
+  const stream = pending();
+  const exec = globalThis.host.exec;
+  globalThis.host.exec = (command, args, options) => command === "agent-browser" && args.at(-1) === "enable" ? (calls.push({ command, args, on: options?.on ?? null }), events.push("enable"), stream.promise) : exec(command, args, options);
+  const { b, cx } = panel("/home/me/shop");
+  b.start(TARGET, cx, true);
+  await until(() => streams().length === 1);
+  hideWith(b, cx, { hidden: true });
+  stream.release({ code: 0, stdout: "", stderr: "" });
+  await drain(cx);
+  assert.deepEqual(events, ["enable", "close"]);
+  assert.equal(b.starts.has(targetKey(TARGET)), false);
+  assert.equal(b.runs.has(targetKey(TARGET)), false);
+});
+
+function holdScan(n) {
+  const scan = pending();
+  const exec = globalThis.host.exec;
+  let seen = 0;
+  globalThis.host.exec = (command, args, options) => command === "sh" && args[1] === DISCOVER && ++seen === n ? (calls.push({ command, args, on: options?.on ?? null }), scan.promise.then(() => exec(command, args, options))) : exec(command, args, options);
+  return { scan, held: () => seen >= n };
+}
+
+test("a hide while a remote start's final scan is pending closes the session on that machine once, and stores no start", async () => {
+  const { scan, held } = holdScan(2);
+  const { b, cx } = panel("/home/me/shop");
+  b.target = REMOTE;
+  b.start(REMOTE, cx, true);
+  await until(held);
+  sessions = [{ session: "herdr-t6", url: "https://agent.test/" }];
+  const from = calls.length;
+  hideWith(b, cx, { hidden: true });
+  scan.release();
+  await drain(cx);
+  const after = calls.slice(from).filter((c) => c.command === "agent-browser");
+  assert.deepEqual(after.map((c) => [c.args, c.on]), [[["--session", "herdr-t6", "close"], "build_box"]]);
+  assert.equal(calls.at(-1).args[1], DISCOVER);
+  assert.equal(b.starts.has(targetKey(REMOTE)), false);
+  assert.equal(b.runs.has(targetKey(REMOTE)), false);
+  assert.equal(b.launches.has(targetKey(REMOTE)), false);
+  assert.equal(b.closes.has(targetKey(REMOTE)), false);
+});
+
+for (const [when, n] of [["its first scan", 1], ["its final scan", 2]]) {
+  test(`a hide during ${when} of a start that finds the session already running closes it once, opens nothing, and stores no start`, async () => {
+    sessions = [{ session: "herdr-t6", url: "https://agent.test/" }];
+    const { scan, held } = holdScan(n);
+    const { b, cx } = panel("/home/me/shop");
+    b.start(TARGET, cx, true);
+    await until(held);
+    hideWith(b, cx, { hidden: true });
+    scan.release();
+    await drain(cx);
+    assert.deepEqual(opens(), []);
+    assert.deepEqual(agentBrowser().map((c) => [c.args, c.on]), [[["--session", "herdr-t6", "close"], null]]);
+    assert.equal(b.starts.has(targetKey(TARGET)), false);
+    assert.equal(b.runs.has(targetKey(TARGET)), false);
+    assert.equal(b.launches.has(targetKey(TARGET)), false);
+  });
+}
+
+test("a hide during a start whose open fails closes nothing and keeps the start's error", async () => {
+  const open = pending();
+  openResult = open.promise;
+  const { b, cx } = panel("/home/me/shop");
+  b.start(TARGET, cx, true);
+  await until(() => opens().length === 1);
+  hideWith(b, cx, { hidden: true });
+  open.release({ code: 1, stdout: "", stderr: "Chrome failed to launch" });
+  await drain(cx);
+  assert.deepEqual(agentBrowser(), []);
+  assert.deepEqual(b.starts.get(targetKey(TARGET)), { status: "failed", error: "Chrome failed to launch" });
+});
+
+test("a hide during a local start whose open fails closes the session the next scan lists, once, and stores no failed start", async () => {
+  const open = pending();
+  openResult = open.promise;
+  const { b, cx } = panel("/home/me/shop");
+  b.start(TARGET, cx, true);
+  await until(() => opens().length === 1);
+  hideWith(b, cx, { hidden: true });
+  sessions = [{ session: "herdr-t6", url: "about:blank" }];
+  open.release({ code: 1, stdout: "", stderr: "page load failed" });
+  await drain(cx);
+  assert.deepEqual(agentBrowser().map((c) => [c.args, c.on]), [[["--session", "herdr-t6", "close"], null]]);
+  assert.equal(b.starts.has(targetKey(TARGET)), false);
+  assert.equal(b.closes.has(targetKey(TARGET)), false);
+  assert.equal(b.runs.has(targetKey(TARGET)), false);
+  assert.equal(b.launches.has(targetKey(TARGET)), false);
+});
+
+test("a hide during a remote start whose open hits its wait limit closes the session the next scan lists, once, on that machine", async () => {
+  const open = pending();
+  runResult = () => open.promise;
+  const { b, cx } = panel("/home/me/shop");
+  b.target = REMOTE;
+  b.start(REMOTE, cx, true);
+  await until(() => hcCalls.length === 1);
+  hideWith(b, cx, { hidden: true });
+  sessions = [{ session: "herdr-t6", url: "about:blank" }];
+  open.release({ code: 0, stderr: "", stdout: JSON.stringify({ address: "build_box/t1q", output: "", wait: { ended: false, exit_code: null, reason: "timeout", signal: null } }) });
+  await drain(cx);
+  assert.deepEqual(hcCalls.map((args) => args[0]), ["run", "kill", "rm"]);
+  assert.deepEqual(agentBrowser().map((c) => [c.args, c.on]), [[["--session", "herdr-t6", "close"], "build_box"]]);
+  assert.equal(b.starts.has(targetKey(REMOTE)), false);
+  assert.equal(b.closes.has(targetKey(REMOTE)), false);
+  assert.equal(b.launches.has(targetKey(REMOTE)), false);
+});
+
+test("a hide's close that fails after a pending start shows its error", async () => {
+  const open = pending();
+  openResult = open.promise;
+  closeResult = async () => { throw new Error("machine unreachable"); };
+  const { b, cx } = panel("/home/me/shop");
+  b.start(TARGET, cx, true);
+  await until(() => opens().length === 1);
+  hideWith(b, cx, { hidden: true });
+  open.release({ code: 0, stdout: "", stderr: "" });
+  await drain(cx);
+  assert.deepEqual(b.closes.get(targetKey(TARGET)), { status: "failed", error: "agent-browser could not run on this computer: machine unreachable" });
+  assert.equal(b.starts.has(targetKey(TARGET)), false);
+});
+
+for (const [how, answer, mark] of [["works", async () => { sessions = []; return { code: 0, stdout: "", stderr: "" }; }, { status: "closed" }], ["fails", async () => ({ code: 1, stdout: "", stderr: "daemon busy\n" }), { status: "failed", error: "agent-browser close failed: daemon busy" }]]) {
+  test(`a close button click while an open is pending, then a hide, runs one close whose mark stays when it ${how}`, async () => {
+    const open = pending();
+    openResult = open.promise;
+    closeResult = answer;
+    const { b, cx } = panel("/home/me/shop");
+    b.start(TARGET, cx, true);
+    await until(() => opens().length === 1);
+    b.end(TARGET, cx);
+    await cx.tasks.at(-1);
+    let second = 0;
+    closeResult = async () => { second++; return { code: 1, stdout: "", stderr: "second close\n" }; };
+    hideWith(b, cx, { hidden: true });
+    open.release({ code: 0, stdout: "", stderr: "" });
+    await drain(cx);
+    assert.equal(second, 0);
+    assert.equal(closes().length, 1);
+    assert.deepEqual(streams(), []);
+    assert.deepEqual(b.closes.get(targetKey(TARGET)), mark);
+    assert.equal(b.starts.has(targetKey(TARGET)), false);
+    assert.equal(b.runs.has(targetKey(TARGET)), false);
+    assert.equal(b.launches.has(targetKey(TARGET)), false);
+  });
+}
+
+test("a close button click while a hide's close of a start runs adds no second close, and the button's mark wins", async () => {
+  const open = pending(), close = pending();
+  openResult = open.promise;
+  closeResult = () => close.promise;
+  const { b, cx } = panel("/home/me/shop");
+  b.start(TARGET, cx, true);
+  await until(() => opens().length === 1);
+  hideWith(b, cx, { hidden: true });
+  open.release({ code: 0, stdout: "", stderr: "" });
+  await until(() => closes().length === 1);
+  b.end(TARGET, cx);
+  assert.equal(b.current().kind, "closing");
+  close.release({ code: 0, stdout: "", stderr: "" });
+  await drain(cx);
+  assert.equal(closes().length, 1);
+  assert.deepEqual(b.closes.get(targetKey(TARGET)), { status: "closed" });
+  assert.equal(b.starts.has(targetKey(TARGET)), false);
+});
+
+function holdDetect() {
+  const detect = pending();
+  const exec = globalThis.host.exec;
+  let seen = false;
+  globalThis.host.exec = (command, args, options) => command === "sh" && args[1] === DETECT && !seen ? (seen = true, detect.promise.then(() => exec(command, args, options))) : exec(command, args, options);
+  return { detect, held: () => seen };
+}
+
+for (const [when, hold] of [["its address detection", () => { const { detect, held } = holdDetect(); return { release: detect.release, held }; }], ["its first scan", () => { const { scan, held } = holdScan(1); return { release: scan.release, held }; }]]) {
+  test(`a close button click during ${when} opens nothing, closes once, and stores no start`, async () => {
+    const { release, held } = hold();
+    const { b, cx } = panel("/home/me/shop");
+    b.start(TARGET, cx, true);
+    await until(held);
+    b.end(TARGET, cx);
+    release();
+    await drain(cx);
+    assert.deepEqual(opens(), []);
+    assert.deepEqual(agentBrowser().map((c) => c.args), [["--session", "herdr-t6", "close"]]);
+    assert.deepEqual(b.closes.get(targetKey(TARGET)), { status: "closed" });
+    assert.equal(b.starts.has(targetKey(TARGET)), false);
+    assert.equal(b.launches.has(targetKey(TARGET)), false);
+  });
+
+  test(`a hide during ${when} of a start with no session opens nothing, closes nothing, and stores no start`, async () => {
+    const { release, held } = hold();
+    const { b, cx } = panel("/home/me/shop");
+    b.start(TARGET, cx, true);
+    await until(held);
+    hideWith(b, cx, { hidden: true });
+    release();
+    await drain(cx);
+    assert.deepEqual(opens(), []);
+    assert.deepEqual(agentBrowser(), []);
+    assert.equal(b.closes.has(targetKey(TARGET)), false);
+    assert.equal(b.starts.has(targetKey(TARGET)), false);
+    assert.equal(b.launches.has(targetKey(TARGET)), false);
+  });
+}
+
+for (const [when, hold] of [["its address detection", () => { const { detect, held } = holdDetect(); return { release: detect.release, held }; }], ["its open", () => { const open = pending(); openResult = open.promise; return { release: () => open.release({ code: 0, stdout: "", stderr: "" }), held: () => opens().length === 1 }; }]]) {
+  for (const [how, answer, mark] of [["works", async () => { sessions = []; return { code: 0, stdout: "", stderr: "" }; }, { status: "closed" }], ["fails", async () => ({ code: 1, stdout: "", stderr: "daemon busy\n" }), { status: "failed", error: "agent-browser close failed: daemon busy" }]]) {
+    test(`a hide during ${when}, then a close button click before any close, runs one close whose mark stays when it ${how}`, async () => {
+      closeResult = answer;
+      const { release, held } = hold();
+      const { b, cx } = panel("/home/me/shop");
+      b.start(TARGET, cx, true);
+      await until(held);
+      hideWith(b, cx, { hidden: true });
+      assert.deepEqual(closes(), []);
+      sessions = [{ session: "herdr-t6", url: "https://agent.test/" }];
+      b.end(TARGET, cx);
+      release();
+      await drain(cx);
+      assert.equal(closes().length, 1);
+      assert.deepEqual(streams(), []);
+      assert.deepEqual(b.closes.get(targetKey(TARGET)), mark);
+      assert.equal(b.starts.has(targetKey(TARGET)), false);
+      assert.equal(b.runs.has(targetKey(TARGET)), false);
+      assert.equal(b.launches.has(targetKey(TARGET)), false);
+    });
+  }
+}
+
+test("a hide during address detection of a start whose session is already running closes it once and opens nothing", async () => {
+  sessions = [{ session: "herdr-t6", url: "https://agent.test/" }];
+  const { detect, held } = holdDetect();
+  const { b, cx } = panel("/home/me/shop");
+  b.start(TARGET, cx, true);
+  await until(held);
+  hideWith(b, cx, { hidden: true });
+  detect.release();
+  await drain(cx);
+  assert.deepEqual(opens(), []);
+  assert.deepEqual(agentBrowser().map((c) => c.args), [["--session", "herdr-t6", "close"]]);
+  assert.equal(b.starts.has(targetKey(TARGET)), false);
+});
+
+test("a close button click during a start's final scan stores no start over the close", async () => {
+  const { scan, held } = holdScan(2);
+  const { b, cx } = panel("/home/me/shop");
+  b.start(TARGET, cx, true);
+  await until(held);
+  b.end(TARGET, cx);
+  scan.release();
+  await drain(cx);
+  assert.equal(closes().length, 1);
+  assert.deepEqual(b.closes.get(targetKey(TARGET)), { status: "closed" });
+  assert.equal(b.starts.has(targetKey(TARGET)), false);
+  assert.equal(b.runs.has(targetKey(TARGET)), false);
+});
+
+test("the address the page was at when the panel hid is kept whole for the terminal's space, query and fragment included", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  b.space = "s1";
+  running(b);
+  const feed = showing(b, TARGET);
+  feed.url = "https://shop.test/cart?token=abc#pay";
+  hideWith(b, cx, { hidden: true });
+  await drain(cx);
+  const memory = JSON.parse(stored.get("hiddenUrls"));
+  assert.deepEqual(Object.keys(memory), ["|space:s1"]);
+  assert.equal(memory["|space:s1"].url, "https://shop.test/cart?token=abc#pay");
+});
+
+test("with no feed, the hide keeps the scanned address whole, under the session's folder when no space is known", async () => {
+  const { b, cx } = panel("/home/me/b");
+  b.sessionFolders.set(targetKey(TARGET), "/home/me/a");
+  running(b, TARGET, "https://shop.test/orders?page=2");
+  hideWith(b, cx, { hidden: true });
+  await drain(cx);
+  const memory = JSON.parse(stored.get("hiddenUrls"));
+  assert.deepEqual(Object.keys(memory), ["|/home/me/a"]);
+  assert.equal(memory["|/home/me/a"].url, "https://shop.test/orders?page=2");
+});
+
+test("a hide with no address known, or none it may open, keeps nothing", async () => {
+  for (const url of [null, "about:blank", "https://me:secret@shop.test/"]) {
+    stored.delete("hiddenUrls");
+    const { b, cx } = panel("/home/me/shop");
+    b.space = "s1";
+    running(b, TARGET, url);
+    hideWith(b, cx, { hidden: true });
+    await drain(cx);
+    assert.equal(stored.has("hiddenUrls"), false, String(url));
+  }
+});
+
+test("the folder memory still strips query and fragment while the hidden address keeps them", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  b.space = "s1";
+  running(b, TARGET, "https://shop.test/cart?token=abc#pay");
+  b.settle(cx);
+  hideWith(b, cx, { hidden: true });
+  await drain(cx);
+  assert.equal(JSON.parse(stored.get("lastUrls"))["|/home/me/shop"].url, "https://shop.test/cart");
+  assert.equal(JSON.parse(stored.get("hiddenUrls"))["|space:s1"].url, "https://shop.test/cart?token=abc#pay");
+});
+
+test("the next start in that space opens the hidden address ahead of a listening server, also after a restart", async () => {
+  stored.set("hiddenUrls", JSON.stringify({ "|space:s1": { url: "https://shop.test/cart?step=2#pay", at: 1 } }));
+  const { b, cx } = panel("/home/me/shop");
+  b.space = "s1";
+  b.start(TARGET, cx);
+  await drain(cx);
+  assert.deepEqual(opens(), [opening("https://shop.test/cart?step=2#pay")]);
+});
+
+test("a start in another space, or one the terminal is not shown for, opens the listening server", async () => {
+  stored.set("hiddenUrls", JSON.stringify({ "|space:s1": { url: "https://shop.test/cart", at: 1 } }));
+  const { b, cx } = panel("/home/me/shop");
+  b.space = "s2";
+  b.start(TARGET, cx);
+  await drain(cx);
+  b.space = "s1";
+  b.start({ ...OTHER }, cx);
+  await drain(cx);
+  assert.deepEqual(opens().map((args) => [args[4], args.at(-1)]), [["herdr-t6", "http://127.0.0.1:3000/"], ["herdr-t7", "about:blank"]]);
+});
+
+test("a start with no space known opens the address hidden in the terminal's folder", async () => {
+  stored.set("hiddenUrls", JSON.stringify({ "|/home/me/shop": { url: "https://shop.test/cart", at: 1 } }));
+  const { b, cx } = panel("/home/me/shop");
+  b.start(TARGET, cx);
+  await drain(cx);
+  assert.deepEqual(opens(), [opening("https://shop.test/cart")]);
+});
+
+function ticking(folder) {
+  const ticks = [];
+  const cx = { tasks: [], notify() {}, focus_handle: () => ({ is_focused: () => false }), timer: { every: (ms, fn) => ticks.push(fn), after() {} }, spawn(body) { const p = body(cx); cx.tasks.push(p); return p; } };
+  const b = new Browser();
+  b.init({}, cx);
+  cx.tasks.length = 0;
+  b.target = TARGET;
+  b.folder = folder;
+  b.shownAt = 0;
+  return { b, cx, tick: () => ticks[0](cx) };
+}
+
+test("the scan timer catches a hide on its own, with no render, and only the panel's block hiding closes the session", async () => {
+  const { b, cx, tick } = ticking("/home/me/shop");
+  running(b);
+  shownLayout = panelLayout();
+  globalThis.host.layout = () => shownLayout;
+  visible = false;
+  tick();
+  await drain(cx);
+  assert.deepEqual(closes(), []);
+  visible = true;
+  tick();
+  shownLayout = panelLayout({ hidden: true });
+  tick();
+  await drain(cx);
+  assert.deepEqual(closes().map((c) => c.args[1]), ["herdr-t6"]);
+});
+
+test("render notices a hide too, and reads the terminal's space for the address it keeps", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  Object.assign(globalThis.host, {
+    focused: () => ({ space: "s1", tab: "a1", pane: "p1", terminal: "t6", cwd: "/home/me/shop" }),
+    spaces: () => [{ id: "s1", machine: null, tabs: [{ id: "a1" }] }],
+    panes: () => [{ pane: "p1", terminal: "t6", tab: "a1", cwd: "/home/me/shop" }],
+    theme: () => ({}),
+  });
+  running(b);
+  shownLayout = panelLayout();
+  globalThis.host.layout = () => shownLayout;
+  b.render(cx);
+  assert.equal(b.space, "s1");
+  await drain(cx);
+  calls = [];
+  running(b);
+  shownLayout = panelLayout({ active: "files" });
+  b.render(cx);
+  await drain(cx);
+  assert.deepEqual(closes().map((c) => c.args[1]), ["herdr-t6"]);
+  assert.equal(JSON.parse(stored.get("hiddenUrls"))["|space:s1"].url, "https://agent.test/");
 });
