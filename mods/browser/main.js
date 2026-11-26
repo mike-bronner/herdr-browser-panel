@@ -1,9 +1,9 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, focused, spaces, panes, theme, window, layout, checking, settings } from "herdr";
+import { exec, hc, focused, spaces, panes, theme, window, layout, checking, settings } from "herdr";
 import { DISCOVER, parseDiscovery } from "./discovery.js";
 import { installPlan, needsSudoCheck, installStep, installFailure, installDone, outputTail, settledInstall } from "./install.js";
-import { follow, targetKey, panelState, settledStart, blockShown, headerHeight, machineLabel, startCommand, streamArgs, feedKey, takesKeys, findSession, terminalFolder, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
+import { follow, targetKey, panelState, settledStart, blockShown, headerHeight, machineLabel, startCommand, remoteStartArgs, remoteStartResult, streamArgs, feedKey, takesKeys, findSession, terminalFolder, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
 import { DETECT, parseDetection, herdArgs, parseHerdSites, pickAddress, recall, remember, readMemory } from "./address.js";
 import { slug, normalizeUrl, mouseMessage, wheelMessage, keyMessages, textMessages, followUrl, viewportFor, resizeStep, retryDelay, addressAtRest, pageTitle } from "./page.js";
 import { connector } from "./connect.js";
@@ -34,6 +34,15 @@ async function discover(machine) {
   } catch (e) {
     return { at, os: null, tools: null, sessions: [], error: reason(e) };
   }
+}
+
+async function startRemote(machine, session, url) {
+  const run = remoteStartResult(await hc(remoteStartArgs(machine, session, url)));
+  if (run.address) {
+    if (run.running) await hc(["kill", run.address]).catch(() => {});
+    await hc(["rm", run.address]).catch(() => {});
+  }
+  return run.status === "started" ? { status: "started" } : { status: "failed", error: run.error };
 }
 
 function note(t, text, color = t.dim) {
@@ -187,6 +196,8 @@ export default class Browser extends View {
         if (findSession(before.sessions, target.session)) {
           result = { status: "started" };
           opened = false;
+        } else if (target.machine) {
+          result = await startRemote(target.machine, target.session, url);
         } else {
           const [command, args] = startCommand(target.session, url);
           const r = await exec(command, args, { on: target.machine, timeout: 60000 });

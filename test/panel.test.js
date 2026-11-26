@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startCommand, streamArgs, feedKey, takesKeys, panelState, settledStart, blockShown, headerHeight, terminalFolder, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
+import { sessionName, resolveTarget, follow, targetKey, machineLabel, findSession, startCommand, remoteStartArgs, remoteStartResult, streamArgs, feedKey, takesKeys, panelState, settledStart, blockShown, headerHeight, terminalFolder, sessionFolder, autoStart, trackRun, endedQuickly, screenText } from "../mods/browser/panel.js";
 
 const SPACES = [{ id: "sp-local", machine: null }, { id: "sp-remote", machine: "build_box" }];
 
@@ -161,6 +161,61 @@ test("panelState is running with session, machine, port and page when the sessio
 
 test("panelState gives a null os when the machine did not report one", () => {
   assert.equal(panelState({ target: remote, scan: { sessions: [running] } }).os, null);
+});
+
+test("remoteStartArgs runs the same scaled launch in a Herdr terminal on the machine, waiting for it to end", () => {
+  const args = remoteStartArgs("build_box", "herdr-t1b", "https://shop.test");
+  const [command, inner] = opened("https://shop.test/");
+  assert.deepEqual(args, ["run", "--json", "--on", "build_box", "--no-parent", "--no-notify", "--timeout", "60", "--label", "browser=start", "--", command, ...inner]);
+  assert.ok(!args.includes("--bg"));
+  assert.ok(!args.includes("--rm"));
+});
+
+test("remoteStartArgs refuses a missing machine, a bad session name and a bad address", () => {
+  for (const machine of [null, "", undefined]) assert.throws(() => remoteStartArgs(machine, "herdr-t1b"), /not a machine name/, String(machine));
+  assert.throws(() => remoteStartArgs("build_box", "t1b"), /not a terminal session name/);
+  assert.throws(() => remoteStartArgs("build_box", "herdr-t1b", "file:///etc/passwd"), /not an address to open/);
+});
+
+const ran = (wait, output = "") => ({ code: 0, stderr: "", stdout: JSON.stringify({ address: "build_box/t1q", output, state: "live", wait }) });
+
+test("remoteStartResult reports a start whose open exited 0, with the terminal to remove", () => {
+  assert.deepEqual(remoteStartResult(ran({ ended: true, exit_code: 0, reason: "exit", signal: null })), { status: "started", address: "build_box/t1q" });
+});
+
+test("remoteStartResult reports a failed open with the last lines it printed", () => {
+  const output = ["one", "two", "three", "four", "five", "six", "✗ Chrome failed to launch", "  at ProcessSingleton"].join("\n");
+  const r = remoteStartResult(ran({ ended: true, exit_code: 1, reason: "exit", signal: null }, `${output}\n`));
+  assert.deepEqual(r, { status: "failed", address: "build_box/t1q", error: ["three", "four", "five", "six", "✗ Chrome failed to launch", "  at ProcessSingleton"].join("\n") });
+});
+
+test("remoteStartResult names the exit code or the signal when a failed open printed nothing", () => {
+  assert.equal(remoteStartResult(ran({ ended: true, exit_code: 3, reason: "exit", signal: null }, "  ")).error, "exit 3");
+  assert.equal(remoteStartResult(ran({ ended: true, exit_code: null, reason: "signal", signal: 9 })).error, "stopped by signal 9");
+});
+
+test("remoteStartResult fails an open still running at the wait's end, and marks its terminal to kill", () => {
+  assert.deepEqual(remoteStartResult(ran({ ended: false, exit_code: null, reason: "timeout", signal: null }, "opening")), { status: "failed", address: "build_box/t1q", running: true, error: "agent-browser open did not finish within 60 s" });
+});
+
+test("remoteStartResult fails a run with no wait report, and still marks its terminal to kill", () => {
+  const r = remoteStartResult({ code: 0, stderr: "", stdout: JSON.stringify({ address: "build_box/t1q" }) });
+  assert.deepEqual(r, { status: "failed", address: "build_box/t1q", running: true, error: "hc run gave no exit status" });
+});
+
+test("remoteStartResult shows hc's own error when the terminal could not start", () => {
+  const stderr = JSON.stringify({ error: { kind: "spawn_failed", message: 'cannot start "env": No such file or directory (os error 2)' } });
+  assert.deepEqual(remoteStartResult({ code: 1, stdout: "", stderr }), { status: "failed", address: null, error: 'cannot start "env": No such file or directory (os error 2)' });
+});
+
+test("remoteStartResult falls back to hc's plain output, then its exit code, and never reads stdout of a failed hc", () => {
+  assert.equal(remoteStartResult({ code: 2, stdout: "", stderr: "machine build_box is not connected\n" }).error, "machine build_box is not connected");
+  assert.equal(remoteStartResult({ code: 2, stdout: "", stderr: "" }).error, "exit 2");
+  assert.equal(remoteStartResult({ code: 2, stdout: JSON.stringify({ address: "build_box/t1q", wait: { ended: true, exit_code: 0 } }), stderr: "" }).status, "failed");
+});
+
+test("remoteStartResult fails output that is not JSON", () => {
+  assert.deepEqual(remoteStartResult({ code: 0, stdout: "not json", stderr: "" }), { status: "failed", address: null, error: "not json" });
 });
 
 test("streamArgs enables the stream in the named session", () => {

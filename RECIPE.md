@@ -88,10 +88,21 @@ globe icon (`browser.svg`, 14px) and "Browser", 26px high, 12px text, radius
   starts one with `env AGENT_BROWSER_STREAM_MAX_WIDTH=8192
   AGENT_BROWSER_STREAM_MAX_HEIGHT=8192 agent-browser --session herdr-<id>
   --args --force-device-scale-factor=2 open <address>`, then `stream enable`.
-  The same command runs on a remote machine. The launch argument makes Chrome
-  render at 2x. The two caps let the session's daemon stream frames at that
-  size: it reads them once, when it starts, and without them it cuts frames
-  back to the page's CSS size. The address is the first of:
+  On a remote machine, the same command runs in a Herdr terminal there:
+  `hc run --json --on <machine> --no-parent --no-notify --timeout 60 --label
+  browser=start -- env …`. Herdr's `exec` on another machine stops every
+  process the command leaves running when it returns, so the session's
+  daemon and Chrome would die with it. A daemon started in a Herdr terminal
+  stays running after `open` returns. The panel waits for `open` to end, and
+  reads its exit code and output from the `hc run` result. Then it removes
+  the terminal with `hc rm`, and kills it first with `hc kill` when `open`
+  did not end within 60 seconds. A failed remote start shows the last lines
+  `open` printed, as a local one does. The terminal has no `herdr.space` or
+  `herdr.tab` label, and Herdr shows only labeled terminals in its spaces.
+  The launch argument makes Chrome render at 2x. The two caps let the
+  session's daemon stream frames at that size: it reads them once, when it
+  starts, and without them it cuts frames back to the page's CSS size. The
+  address is the first of:
   1. a server listening on 127.0.0.1, `::1` or all addresses, whose process runs
      inside the terminal's folder (the lowest port wins, and the Vite port in
      `public/hot` is skipped). Not used when the folder is the home folder
@@ -172,6 +183,7 @@ props:
   arguments.
 - `connect.js`: the direct connection, or the ssh tunnel through
   `hc run --bg`.
+- `main.js` also starts a remote session through `hc run --on <machine>`.
 - `stream.js`: the WebSocket stream, frame pacing, input queue, commands.
 - `frames.js`: frames written as JPEG files and shown as images.
 - Art: `back.svg`, `forward.svg`, `reload.svg`, `lock.svg`.
@@ -207,7 +219,9 @@ before you install:
 
 - **Programs**, on the terminal's machine through `exec`:
   - `agent-browser` (`open`, `stream enable`, `install`). `open` runs through
-    `env`, to set the two stream caps.
+    `env`, to set the two stream caps. On a remote machine, `open` runs in a
+    Herdr terminal through `hc run --on <machine>`, which the panel removes
+    with `hc rm` once `open` ends.
   - `sh` scripts for session discovery and address detection. They use
     standard tools, such as `ss` or `lsof`, `grep`, `sed` and `node -v`.
   - `brew` or `npm`, and `sudo -n true` on Linux, only after the Install

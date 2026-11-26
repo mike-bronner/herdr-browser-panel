@@ -1,4 +1,4 @@
-import { installPlan } from "./install.js";
+import { installPlan, outputTail } from "./install.js";
 import { openable } from "./address.js";
 
 export function sessionName(terminalId) {
@@ -50,6 +50,32 @@ export function startCommand(session, url = "about:blank") {
     `AGENT_BROWSER_STREAM_MAX_WIDTH=${STREAM_CAP}`, `AGENT_BROWSER_STREAM_MAX_HEIGHT=${STREAM_CAP}`,
     "agent-browser", "--session", checked(session), "--args", "--force-device-scale-factor=2", "open", page,
   ]];
+}
+
+const START_WAIT_S = 60;
+
+export function remoteStartArgs(machine, session, url) {
+  if (typeof machine !== "string" || !machine) throw new Error(`not a machine name: ${machine}`);
+  const [command, args] = startCommand(session, url);
+  return ["run", "--json", "--on", machine, "--no-parent", "--no-notify", "--timeout", String(START_WAIT_S), "--label", "browser=start", "--", command, ...args];
+}
+
+function parsed(text) {
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+export function remoteStartResult(r) {
+  const run = r?.code === 0 ? parsed(r.stdout) : null;
+  const address = typeof run?.address === "string" && run.address ? run.address : null;
+  if (!run) return { status: "failed", address, error: parsed(r?.stderr)?.error?.message || outputTail(r) };
+  const wait = run.wait;
+  if (wait?.ended !== true) {
+    return { status: "failed", address, running: true, error: wait ? `agent-browser open did not finish within ${START_WAIT_S} s` : "hc run gave no exit status" };
+  }
+  if (wait.exit_code === 0) return { status: "started", address };
+  const output = typeof run.output === "string" ? run.output.trim() : "";
+  const error = output ? output.split("\n").slice(-6).join("\n") : wait.signal != null ? `stopped by signal ${wait.signal}` : `exit ${wait.exit_code}`;
+  return { status: "failed", address, error };
 }
 
 export function streamArgs(session) {

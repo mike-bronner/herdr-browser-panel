@@ -12,7 +12,9 @@ on and can click and type in it too.
 - Follows the focused terminal. Its session is `herdr-<terminal id>`, on that
   terminal's own machine: this computer, or a remote machine over an ssh
   tunnel.
-- Starts the session when there is none, and opens the project's address:
+- Starts the session when there is none. On a remote machine it starts the
+  session in a Herdr terminal there, so the session keeps running, and removes
+  that terminal once the start ends. It opens the project's address:
   1. a server listening from the terminal's folder.
   2. the last address used in that folder.
   3. the folder's Herd site, https when Herd holds the certificate.
@@ -65,7 +67,9 @@ To install, ask your agent to follow [RECIPE.md](RECIPE.md). In short:
 
 - **Runs programs** on the terminal's machine: `agent-browser`, `sh` scripts
   for session discovery and address detection, and `ssh` tunnels for remote
-  terminals. `brew` or `npm` installs run only when you click Install.
+  terminals. On a remote machine, `agent-browser open` runs through
+  `hc run --on <machine>`. `brew` or `npm` installs run only when you click
+  Install.
 - **Reads** only the `APP_URL` line of a project's `.env`. To find the
   address it also reads Herd's config and site folder names,
   `public/hot`, agent-browser's session files, and which folder each

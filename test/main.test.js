@@ -19,9 +19,10 @@ register(`data:text/javascript,${encodeURIComponent(hooks)}`);
 const { DISCOVER } = await import("../mods/browser/discovery.js");
 const { DETECT } = await import("../mods/browser/address.js");
 const { default: Browser } = await import("../mods/browser/main.js");
+const { targetKey } = await import("../mods/browser/panel.js");
 
 const TARGET = { address: "t6", machine: null, id: "t6", session: "herdr-t6", since: 1 };
-let calls, sessions, visible, stored, openResult, detectFails;
+let calls, sessions, visible, stored, openResult, detectFails, hcCalls, runResult;
 
 function discovery() {
   return ['{"os":"Darwin","agentBrowser":true}', ...sessions.map((s) => JSON.stringify({ session: s.session, dir: "/tmp/agent-browser", pid: 77, port: 0, engine: "chrome", target: { url: s.url } }))].join("\n");
@@ -33,6 +34,8 @@ beforeEach(() => {
   visible = true;
   openResult = { code: 0, stdout: "", stderr: "" };
   detectFails = false;
+  hcCalls = [];
+  runResult = async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ address: "build_box/t1q", output: "", state: "live", wait: { ended: true, exit_code: 0, reason: "exit", signal: null } }) });
   stored = new Map();
   globalThis.localStorage = { getItem: (k) => stored.get(k) ?? null, setItem: (k, v) => stored.set(k, String(v)) };
   globalThis.host = {
@@ -49,6 +52,11 @@ beforeEach(() => {
       }
       if (command === "env" && args.includes("open")) return openResult;
       return { code: 0, stdout: "", stderr: "" };
+    },
+    hc: async (args) => {
+      hcCalls.push(args);
+      if (args[0] === "run") return runResult(args);
+      return { code: 0, stdout: "{}", stderr: "" };
     },
   };
 });
@@ -96,14 +104,86 @@ test("the Start button's start reaches agent-browser open too", async () => {
   assert.equal(streams().length, 1);
 });
 
-test("a start on a remote machine runs the scaled launch and the stream there", async () => {
+const REMOTE = { address: "build_box/t6", machine: "build_box", id: "t6", session: "herdr-t6", since: 1 };
+const remoteRun = ["run", "--json", "--on", "build_box", "--no-parent", "--no-notify", "--timeout", "60", "--label", "browser=start", "--", "env", ...opening("about:blank")];
+
+async function startRemote() {
   const { b, cx } = panel("/home/me/shop");
-  const remote = { address: "build_box/t6", machine: "build_box", id: "t6", session: "herdr-t6", since: 1 };
-  b.start(remote, cx);
+  b.start(REMOTE, cx);
   await drain(cx);
-  const open = calls.filter((c) => c.command === "env" && c.args.includes("open"));
-  assert.deepEqual(open.map((c) => [c.on, c.args]), [["build_box", opening("about:blank")]]);
+  b.target = REMOTE;
+  return b;
+}
+
+test("a start on a remote machine runs the scaled launch in a Herdr terminal there, removes it, and enables the stream there", async () => {
+  const b = await startRemote();
+  assert.deepEqual(opens(), []);
+  assert.deepEqual(hcCalls, [remoteRun, ["rm", "build_box/t1q"]]);
   assert.deepEqual(streams().map((c) => c.on), ["build_box"]);
+  assert.equal(b.starts.get(targetKey(REMOTE)).status, "started");
+});
+
+test("a local start still runs the scaled launch directly, with no Herdr terminal", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  b.start(TARGET, cx);
+  await drain(cx);
+  assert.deepEqual(hcCalls, []);
+  assert.deepEqual(calls.filter((c) => c.command === "env").map((c) => c.on), [null]);
+});
+
+test("a remote open that fails shows what it printed in the panel, and its terminal is removed", async () => {
+  runResult = async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ address: "build_box/t1q", output: "✗ Chrome failed to launch\n", wait: { ended: true, exit_code: 1, reason: "exit", signal: null } }) });
+  const b = await startRemote();
+  assert.deepEqual(hcCalls, [remoteRun, ["rm", "build_box/t1q"]]);
+  assert.deepEqual(streams(), []);
+  assert.deepEqual(b.starts.get(targetKey(REMOTE)), { status: "failed", error: "✗ Chrome failed to launch" });
+  const state = b.current();
+  assert.equal(state.kind, "start");
+  assert.equal(state.error, "✗ Chrome failed to launch");
+});
+
+test("a remote open still running when the wait ends is killed, removed and shown as failed", async () => {
+  runResult = async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ address: "build_box/t1q", output: "", wait: { ended: false, exit_code: null, reason: "timeout", signal: null } }) });
+  const b = await startRemote();
+  assert.deepEqual(hcCalls, [remoteRun, ["kill", "build_box/t1q"], ["rm", "build_box/t1q"]]);
+  assert.equal(b.current().error, "agent-browser open did not finish within 60 s");
+});
+
+test("a remote terminal that cannot start shows hc's error, with nothing to remove", async () => {
+  runResult = async () => ({ code: 1, stdout: "", stderr: JSON.stringify({ error: { kind: "spawn_failed", message: "cannot start \"env\"" } }) });
+  const b = await startRemote();
+  assert.deepEqual(hcCalls, [remoteRun]);
+  assert.equal(b.current().error, "cannot start \"env\"");
+});
+
+test("a remote start whose hc call throws shows the machine and the reason", async () => {
+  runResult = async () => { throw new Error("machine unreachable"); };
+  const b = await startRemote();
+  assert.equal(b.current().error, "agent-browser could not run on build_box: machine unreachable");
+});
+
+test("a failed cleanup of the remote terminal does not turn a good start into a failure", async () => {
+  globalThis.host.hc = async (args) => {
+    hcCalls.push(args);
+    if (args[0] === "run") return runResult(args);
+    throw new Error("core gone");
+  };
+  const b = await startRemote();
+  assert.deepEqual(hcCalls, [remoteRun, ["rm", "build_box/t1q"]]);
+  assert.equal(b.starts.get(targetKey(REMOTE)).status, "started");
+});
+
+test("a timed-out remote open whose kill fails is still removed and shown as timed out", async () => {
+  runResult = async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ address: "build_box/t1q", output: "", wait: { ended: false, exit_code: null, reason: "timeout", signal: null } }) });
+  globalThis.host.hc = async (args) => {
+    hcCalls.push(args);
+    if (args[0] === "run") return runResult(args);
+    if (args[0] === "kill") throw new Error("core gone");
+    return { code: 0, stdout: "{}", stderr: "" };
+  };
+  const b = await startRemote();
+  assert.deepEqual(hcCalls, [remoteRun, ["kill", "build_box/t1q"], ["rm", "build_box/t1q"]]);
+  assert.equal(b.current().error, "agent-browser open did not finish within 60 s");
 });
 
 test("a session that appears while the address is found is connected to and not navigated", async () => {

@@ -73,6 +73,11 @@ on another machine, run agent-browser there, as you already do. The panel
 reaches that machine and shows the session from it. agent-browser must be
 installed on that machine. When it is missing, the panel offers to install it.
 
+When the panel starts a session on a remote machine, it runs `open` in a
+Herdr terminal there with `hc run --on <machine>`, because a daemon that
+Herdr's `exec` starts there stops when the command returns. The panel
+removes that terminal when `open` ends, and the session keeps running at 2x.
+
 Each machine has its own sessions. The local terminal `t1` and the remote
 terminal `build_box/t1` both use the name `herdr-t1`, and the two sessions
 do not meet.
