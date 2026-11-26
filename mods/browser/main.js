@@ -3,7 +3,7 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, hc, focused, spaces, panes, theme, window, layout, checking, settings } from "herdr";
 import { DISCOVER, parseDiscovery } from "./discovery.js";
 import { installPlan, needsSudoCheck, installStep, installFailure, installDone, outputTail, settledInstall } from "./install.js";
-import { follow, targetKey, panelState, settledStart, blockShown, headerHeight, machineLabel, startCommand, remoteStartArgs, remoteStartResult, streamArgs, feedKey, takesKeys, findSession, terminalFolder, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
+import { follow, targetKey, panelState, settledStart, blockShown, headerHeight, machineLabel, startCommand, remoteStartArgs, remoteStartResult, streamArgs, closeArgs, closeShown, startTitle, feedKey, takesKeys, findSession, terminalFolder, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
 import { DETECT, parseDetection, herdArgs, parseHerdSites, pickAddress, recall, remember, readMemory } from "./address.js";
 import { slug, normalizeUrl, mouseMessage, wheelMessage, keyMessages, textMessages, followUrl, viewportFor, resizeStep, retryDelay, addressAtRest, pageTitle } from "./page.js";
 import { connector } from "./connect.js";
@@ -64,6 +64,13 @@ function control(t, id, label, tip, onClick) {
     .child(label);
 }
 
+function headerButton(t, id, path, tip, onClick) {
+  return div().id(id).flex_none().p(3).rounded(4).text_color(t.dim)
+    .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
+    .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); })
+    .child(svg(path).size(14));
+}
+
 function iconButton(t, id, name, tip, onClick, box = 28, glyph = 16) {
   return control(t, id, icon(name).size(glyph), tip, onClick).w(box).h(box).min_w(box).px(0);
 }
@@ -74,6 +81,8 @@ export default class Browser extends View {
     this.scans = new Map();
     this.scanning = new Map();
     this.starts = new Map();
+    this.closes = new Map();
+    this.hovered = false;
     this.installs = new Map();
     this.streamErrors = new Map();
     this.sessionFolders = new Map();
@@ -141,7 +150,7 @@ export default class Browser extends View {
 
   current() {
     const target = this.target;
-    return panelState({ target, scan: this.scans.get(machineKey(target?.machine)), start: this.starts.get(targetKey(target)), install: this.installs.get(machineKey(target?.machine)) });
+    return panelState({ target, scan: this.scans.get(machineKey(target?.machine)), start: this.starts.get(targetKey(target)), install: this.installs.get(machineKey(target?.machine)), close: this.closes.get(targetKey(target)) });
   }
 
   settle(cx) {
@@ -162,7 +171,7 @@ export default class Browser extends View {
         globalThis.localStorage?.setItem(MEMORY_KEY, JSON.stringify(next));
       }
     }
-    if (autoStart(state, { visible: shown(), shownAt: this.shownAt, start: this.starts.get(key), run })) this.start(target, cx, true);
+    if (autoStart(state, { visible: shown(), shownAt: this.shownAt, start: this.starts.get(key), run, close: this.closes.get(key) })) this.start(target, cx, true);
   }
 
   async detectAddress(target, folder) {
@@ -183,6 +192,7 @@ export default class Browser extends View {
     const folder = this.target === target ? this.folder : null;
     this.sessionFolders.set(key, folder);
     this.runs.delete(key);
+    this.closes.delete(key);
     this.starts.set(key, { status: "starting" });
     if (this.installs.get(machineKey(target.machine))?.status !== "installing") this.installs.delete(machineKey(target.machine));
     this.streamErrors.delete(key);
@@ -206,7 +216,7 @@ export default class Browser extends View {
       } catch (e) {
         result = { status: "failed", error: `agent-browser could not run on ${machineLabel(target.machine)}: ${reason(e)}` };
       }
-      if (result.status === "started" && opened) {
+      if (result.status === "started" && opened && !this.closes.has(key)) {
         try {
           const s = await exec("agent-browser", streamArgs(target.session), { on: target.machine, timeout: 30000 });
           if (s.code !== 0) this.streamErrors.set(key, s.stderr.trim() || s.stdout.trim() || `exit ${s.code}`);
@@ -215,8 +225,32 @@ export default class Browser extends View {
         }
       }
       this.keep(machineKey(target.machine), await discover(target.machine));
-      if (auto && opened && result.status === "started") this.runs.set(key, { at: Date.now() });
-      this.starts.set(key, result);
+      if (this.closes.has(key)) this.starts.delete(key);
+      else {
+        if (auto && opened && result.status === "started") this.runs.set(key, { at: Date.now() });
+        this.starts.set(key, result);
+      }
+      cx.notify();
+    });
+  }
+
+  end(target, cx) {
+    const key = targetKey(target);
+    if (this.closes.get(key)?.status === "closing") return;
+    this.closes.set(key, { status: "closing" });
+    this.streamErrors.delete(key);
+    cx.notify();
+    cx.spawn(async (cx) => {
+      if (this.feedKey?.startsWith(`${key}|`)) await this.drop();
+      let result;
+      try {
+        const r = await exec("agent-browser", closeArgs(target.session), { on: target.machine, timeout: 30000 });
+        result = r.code === 0 ? { status: "closed" } : { status: "failed", error: `agent-browser close failed: ${r.stderr.trim() || r.stdout.trim() || `exit ${r.code}`}` };
+      } catch (e) {
+        result = { status: "failed", error: `agent-browser could not run on ${machineLabel(target.machine)}: ${reason(e)}` };
+      }
+      this.keep(machineKey(target.machine), await discover(target.machine));
+      this.closes.set(key, result);
       cx.notify();
     });
   }
@@ -407,6 +441,7 @@ export default class Browser extends View {
             .child(iconButton(t, "browser-back", "back", "Back", (cx) => this.act({ action: "back" }, cx), 30, 18))
             .child(iconButton(t, "browser-forward", "forward", "Forward", (cx) => this.act({ action: "forward" }, cx), 30, 18)))
           .child(h_flex().flex_1().min_w(0).justify_center().child(this.addressField(t))))
+        .when(Boolean(state.error), (el) => el.child(div().mx(10).mb(6).child(note(t, state.error, t.blocked))))
         .when(Boolean(this.note), (el) => el.child(div().mx(10).mb(6).child(note(t, this.note.text, t.blocked))))
         .when(this.keysShown, (el) => el.child(h_flex().id("browser-keys").h(24).flex_none().mx(8).mb(6).px(10).gap(6).items_center().rounded(6).bg(t.solid).text_color(t.solid_foreground).text_size(12)
           .child(div().font_semibold().child("Keys go to the page"))
@@ -467,6 +502,8 @@ export default class Browser extends View {
         return v_flex().gap(6).child(note(t, `Cannot check ${machineLabel(state.machine)} for ${state.session}.`, t.blocked)).child(note(t, state.error));
       case "starting":
         return note(t, `Starting ${where}…`);
+      case "closing":
+        return note(t, `Closing ${where}…`);
       case "installing":
         return v_flex().gap(10)
           .child(h_flex().gap(8).items_center()
@@ -486,7 +523,7 @@ export default class Browser extends View {
           .when(Boolean(state.hint), (el) => el.child(this.depsHint(t, state)));
       case "start":
         return v_flex().gap(10)
-          .child(div().child("No browser for this terminal yet."))
+          .child(div().child(startTitle(state)))
           .child(note(t, where))
           .child(button(t, "browser-start", "Start browser", (cx) => this.start(target, cx)))
           .when(Boolean(state.error), (el) => el.child(note(t, state.error, t.blocked)))
@@ -517,13 +554,15 @@ export default class Browser extends View {
     const t = theme();
     const title = state.kind === "running" ? pageTitle(this.feed?.tabs, this.feed?.url ?? state.url) : "";
     return v_flex().id("browser").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
-      .child(h_flex().h(headerHeight(layout())).flex_none().px(10).gap(8).items_center().overflow_hidden().border_b(1).border_color(t.border).text_size(12)
+      .child(h_flex().id("browser-header").h(headerHeight(layout())).flex_none().px(10).gap(8).items_center().overflow_hidden().border_b(1).border_color(t.border).text_size(12)
+        .on_hover((hovered, cx) => { this.hovered = hovered; cx.notify(); })
         .child(div().flex_none().font_semibold().child("Browser"))
         .when(Boolean(title), (el) => el.child(div().flex_none().text_color(t.dim).opacity(0.5).child("/")))
         .child(div().flex_1().min_w(0).truncate().child(title))
         .when(Boolean(target?.session), (el) => el.child(h_flex().flex_none().gap(6).items_center().text_color(t.dim)
           .child(div().max_w(160).truncate().child(target.session))
-          .child(div().flex_none().h(18).px(6).flex().items_center().rounded(5).bg(t.surface).text_size(11).text_color(t.muted).child(machineLabel(target.machine))))))
+          .child(div().flex_none().h(18).px(6).flex().items_center().rounded(5).bg(t.surface).text_size(11).text_color(t.muted).child(machineLabel(target.machine)))))
+        .when(closeShown(this.hovered, state), (el) => el.child(headerButton(t, "browser-close", "mods/pane/close.svg", "Close this browser session", (cx) => this.end(target, cx)))))
       .child(v_flex().id("browser-body").flex_1().min_h(0).when(state.kind !== "running", (el) => el.p(14).gap(10)).child(this.body(t, state)));
   }
 }

@@ -25,6 +25,11 @@ radius 10, on `background`. Text is 13px `foreground`. Top to bottom:
     (`herdr-<terminal id>`) in `dim`, cut with an ellipsis past 160px, then a
     chip with the machine name, or "this computer". The chip is 18px high, 6px
     side padding, 11px `muted` text on `surface`, radius 5.
+  - At the right end, only while the pointer is over the header and the
+    session runs: a close button, styled like a terminal pane header's
+    buttons. It is the shipped `mods/pane/close.svg` at 14px in `dim`, with 3px
+    padding, radius 4, and it turns `foreground` on a `hover` background. Its
+    tooltip reads "Close this browser session".
 - **Toolbar**, only while a page shows. A `chrome` band with a 1px `border`
   line under it. It holds a 42px row, 8px side padding, 8px gap, and under it
   the note line and the keys bar when they show:
@@ -39,7 +44,8 @@ radius 10, on `background`. Text is 13px `foreground`. Top to bottom:
   - Reload: a 22x22 button with a 13px icon inside the field's right end,
     styled like Back.
 - **Note line**, for 4 seconds after a command fails: 12px text in `blocked`,
-  such as `back: not connected`.
+  such as `back: not connected`. A failed close shows its error on this line
+  too, and it stays.
 - **Keys bar**, 24px high, while the page takes the keyboard: `solid`
   background, `solid_foreground` 12px text, radius 6. It reads "Keys go to the
   page" in semibold, then "Herdr shortcuts too. Click outside the picture to
@@ -55,13 +61,14 @@ When no page shows, the toolbar and page give way to a body with 14px
 padding and one of these:
 
 - "Focus a terminal to see its browser."
-- "Looking for herdr-t6 on this computer…" or "Starting herdr-t6 on this
-  computer…".
+- "Looking for herdr-t6 on this computer…", "Starting herdr-t6 on this
+  computer…" or "Closing herdr-t6 on this computer…".
 - "Cannot check <machine> for <session>." in `blocked`, with the error under it.
 - "Terminal <id> has no usable session name." in `blocked`.
 - "No browser for this terminal yet." with a **Start browser** button: 28px
   high, radius 6, `solid` with `solid_foreground` text. Any error shows under
-  it in `blocked`.
+  it in `blocked`. After the person closes the session, the line reads "You
+  closed this terminal's browser." instead.
 - "agent-browser is not installed on <machine>." with an **Install
   agent-browser** button and a line that names the exact commands it runs.
   When no installer fits, or an install failed, it shows the command to run by
@@ -119,6 +126,17 @@ globe icon (`browser.svg`, 14px) and "Browser", 26px high, 12px text, radius
   - the last start failed: it shows the error and **Start browser**.
   - the panel started the session itself and it ended within 30 seconds: it
     shows **Start browser**.
+  - the person closed the session with the header's close button: it shows
+    **Start browser** and waits for a click. Other terminals still start
+    their sessions.
+- **Closes the session.** The header's close button stops the stream, which
+  also closes a remote session's ssh tunnel, and then runs `agent-browser
+  --session herdr-<id> close` on the terminal's machine. That ends the
+  session's daemon and its Chrome. The body says "Closing herdr-<id> on
+  <machine>…" until the command returns. A failed close shows its error. After
+  the close the panel runs no other agent-browser command for that session,
+  because any such command, `stream status` or `get url` too, starts a new
+  daemon and browser. It only reads the session files again.
 - **Sets the viewport.** It sends the page area's size with
   `deviceScaleFactor` 0, which follows Chrome's real scale, each time the
   page shows, the panel is resized (at most every 250 ms) and the stream
@@ -186,7 +204,8 @@ props:
 - `main.js` also starts a remote session through `hc run --on <machine>`.
 - `stream.js`: the WebSocket stream, frame pacing, input queue, commands.
 - `frames.js`: frames written as JPEG files and shown as images.
-- Art: `back.svg`, `forward.svg`, `reload.svg`, `lock.svg`.
+- Art: `back.svg`, `forward.svg`, `reload.svg`, `lock.svg`, and the shipped
+  `mods/pane/close.svg`.
 - `herdr` functions: `exec`, `hc`, `focused`, `spaces`, `panes`, `theme`,
   `window`, `layout`, `settings`, `checking`, `appHome`, `readTextFile`,
   `watchFolder`. Also `net`, `fs/promises`, `websocket`, `fetch` and
@@ -218,7 +237,8 @@ Herdr's shipped `tabs` mod with these changes only:
 before you install:
 
 - **Programs**, on the terminal's machine through `exec`:
-  - `agent-browser` (`open`, `stream enable`, `install`). `open` runs through
+  - `agent-browser` (`open`, `stream enable`, `close`, `install`). `close`
+    runs only after the header's close button is clicked. `open` runs through
     `env`, to set the two stream caps. On a remote machine, `open` runs in a
     Herdr terminal through `hc run --on <machine>`, which the panel removes
     with `hc rm` once `open` ends.

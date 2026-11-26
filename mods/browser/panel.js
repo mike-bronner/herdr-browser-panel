@@ -82,18 +82,24 @@ export function streamArgs(session) {
   return ["--session", checked(session), "stream", "enable"];
 }
 
+export function closeArgs(session) {
+  return ["--session", checked(session), "close"];
+}
+
 export function feedKey(state, target, visible, shownAt) {
   if (!visible || state?.kind !== "running" || !state.port || state.at < shownAt) return null;
   return `${targetKey(target)}|${state.pid ?? ""}|${state.port}`;
 }
 
-export function panelState({ target, scan, start, install }) {
+export function panelState({ target, scan, start, install, close }) {
   if (!target) return { kind: "idle" };
   const where = { session: target.session, machine: target.machine, address: target.address };
   if (!target.session) return { kind: "unsupported", ...where };
+  if (close?.status === "closing") return { kind: "closing", ...where };
+  const closeError = close?.status === "failed" ? close.error : null;
   const fresh = scan && !(scan.at < target.since) ? scan : null;
   const found = fresh ? findSession(fresh.sessions, target.session) : null;
-  if (found) return { kind: "running", ...where, at: fresh.at, pid: found.pid, port: found.port, url: found.url, engine: found.engine, os: fresh.os ?? null };
+  if (found) return { kind: "running", ...where, at: fresh.at, pid: found.pid, port: found.port, url: found.url, engine: found.engine, os: fresh.os ?? null, error: closeError };
   if (start?.status === "starting") return { kind: "starting", ...where };
   if (install?.status === "installing") return { kind: "installing", ...where, via: install.via, step: install.step, of: install.of, label: install.label };
   if (!fresh) return { kind: "looking", ...where };
@@ -105,10 +111,10 @@ export function panelState({ target, scan, start, install }) {
       ?? (install?.status === "installed" ? "The install finished, but this machine's PATH still does not find agent-browser." : plan.reason);
     return { kind: "missing", ...where, via: plan.via, plan: plan.command, command: failed?.command ?? plan.command, error, hint: plan.hint, ifSudo: plan.hint };
   }
-  const error = start?.status === "failed" ? start.error
+  const error = closeError ?? (start?.status === "failed" ? start.error
     : start?.status === "started" ? `agent-browser started, but no session named ${target.session} showed up`
-    : failed?.error ?? null;
-  return { kind: "start", ...where, at: fresh.at, error, command: start ? null : failed?.command ?? null, hint: !start && install?.status === "installed" ? install.hint ?? null : null };
+    : failed?.error ?? null);
+  return { kind: "start", ...where, at: fresh.at, closed: close?.status === "closed", error, command: start ? null : failed?.command ?? null, hint: !start && install?.status === "installed" ? install.hint ?? null : null };
 }
 
 export function settledStart(state, start) {
@@ -169,8 +175,16 @@ export function endedQuickly(run) {
   return run?.endedAt != null && run.endedAt - run.at < QUICK_END_MS;
 }
 
-export function autoStart(state, { visible, shownAt, start, run }) {
-  return Boolean(visible) && state?.kind === "start" && !state.error && !start && state.at >= shownAt && !endedQuickly(run);
+export function autoStart(state, { visible, shownAt, start, run, close }) {
+  return Boolean(visible) && state?.kind === "start" && !state.error && !start && !close && state.at >= shownAt && !endedQuickly(run);
+}
+
+export function closeShown(hovered, state) {
+  return Boolean(hovered) && state?.kind === "running";
+}
+
+export function startTitle(state) {
+  return state?.closed ? "You closed this terminal's browser." : "No browser for this terminal yet.";
 }
 
 export function trackRun(run, state, now) {

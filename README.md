@@ -20,9 +20,15 @@ on and can click and type in it too.
   3. the folder's Herd site, https when Herd holds the certificate.
   4. `APP_URL` from the project's `.env`.
   5. `about:blank`.
-- Restarts a session that closes, except after a failed start, or when a
-  session it started by itself ended within 30 seconds. Then it shows a
-  **Start browser** button.
+- Restarts a session that closes, except after a failed start, when a
+  session it started by itself ended within 30 seconds, or when you closed it.
+  Then it shows a **Start browser** button.
+- Has a close button at the right end of the header, shown while the pointer
+  is over the header, as on the terminal pane headers. It runs
+  `agent-browser close` for the session on its own machine, which ends the
+  session's daemon and Chrome. That terminal then waits for you to click
+  **Start browser**. Other terminals still start their sessions. A failed
+  close shows its error.
 - Offers an **Install agent-browser** button when agent-browser is missing.
 - Has a Safari-style toolbar (Back and Forward, then an address field with
   Reload inside it), the page flush under it, and a header with the page
@@ -68,8 +74,8 @@ To install, ask your agent to follow [RECIPE.md](RECIPE.md). In short:
 - **Runs programs** on the terminal's machine: `agent-browser`, `sh` scripts
   for session discovery and address detection, and `ssh` tunnels for remote
   terminals. On a remote machine, `agent-browser open` runs through
-  `hc run --on <machine>`. `brew` or `npm` installs run only when you click
-  Install.
+  `hc run --on <machine>`. `agent-browser close` runs only when you click the
+  close button. `brew` or `npm` installs run only when you click Install.
 - **Reads** only the `APP_URL` line of a project's `.env`. To find the
   address it also reads Herd's config and site folder names,
   `public/hot`, agent-browser's session files, and which folder each
@@ -99,7 +105,8 @@ and a snippet for a project's `AGENTS.md`.
 
 - A session the panel did not start, or one that ran before this version,
   streams 1x frames. The panel shows it correctly, but soft on a Retina
-  screen. Close the session to let the panel start it again at 2x.
+  screen. Close it with the header's close button, then click **Start
+  browser**, to start it again at 2x.
 - Chrome will not make its window narrower than 500px. The panel handles this
   by drawing only the page part of the frame and sending the viewport again,
   at 2x and at 1x.

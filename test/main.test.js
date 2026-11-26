@@ -22,7 +22,7 @@ const { default: Browser } = await import("../mods/browser/main.js");
 const { targetKey } = await import("../mods/browser/panel.js");
 
 const TARGET = { address: "t6", machine: null, id: "t6", session: "herdr-t6", since: 1 };
-let calls, sessions, visible, stored, openResult, detectFails, hcCalls, runResult;
+let calls, sessions, visible, stored, openResult, detectFails, hcCalls, runResult, closeResult, events;
 
 function discovery() {
   return ['{"os":"Darwin","agentBrowser":true}', ...sessions.map((s) => JSON.stringify({ session: s.session, dir: "/tmp/agent-browser", pid: 77, port: 0, engine: "chrome", target: { url: s.url } }))].join("\n");
@@ -35,6 +35,8 @@ beforeEach(() => {
   openResult = { code: 0, stdout: "", stderr: "" };
   detectFails = false;
   hcCalls = [];
+  events = [];
+  closeResult = async () => { sessions = []; return { code: 0, stdout: "✓ Browser closed", stderr: "" }; };
   runResult = async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ address: "build_box/t1q", output: "", state: "live", wait: { ended: true, exit_code: 0, reason: "exit", signal: null } }) });
   stored = new Map();
   globalThis.localStorage = { getItem: (k) => stored.get(k) ?? null, setItem: (k, v) => stored.set(k, String(v)) };
@@ -51,6 +53,10 @@ beforeEach(() => {
         return { code: 0, stderr: "", stdout: ["home\t/home/me", `folder\t${args[3]}`, "lsof\tp9", "lsof\tf3", "lsof\tn*:3000", "lsofcwd\tp9", "lsofcwd\tfcwd", `lsofcwd\tn${args[3]}`].join("\n") };
       }
       if (command === "env" && args.includes("open")) return openResult;
+      if (command === "agent-browser" && args.at(-1) === "close") {
+        events.push("close");
+        return closeResult();
+      }
       return { code: 0, stdout: "", stderr: "" };
     },
     hc: async (args) => {
@@ -670,4 +676,227 @@ test("a new area after three resends sends once with the count back at zero, and
   } finally {
     Date.now = realNow;
   }
+});
+
+const closes = () => calls.filter((c) => c.command === "agent-browser" && c.args.at(-1) === "close");
+const agentBrowser = () => calls.filter((c) => c.command === "agent-browser");
+
+function showing(b, target) {
+  const feed = { phase: "live", connects: 1, frames: { keepAlive: async () => {} }, stopped: 0, stop: async () => { feed.stopped++; events.push("stop"); } };
+  b.feed = feed;
+  b.feedKey = `${targetKey(target)}|77|4321`;
+  return feed;
+}
+
+test("closing a session stops its feed, then runs agent-browser close for it, and shows Closing until that ends", async () => {
+  sessions = [{ session: "herdr-t6", url: "https://agent.test/" }];
+  const { b, cx } = panel("/home/me/shop");
+  const feed = showing(b, TARGET);
+  assert.equal(b.current().kind, "running");
+  b.end(TARGET, cx);
+  assert.equal(b.current().kind, "closing");
+  b.end(TARGET, cx);
+  await drain(cx);
+  assert.deepEqual(events, ["stop", "close"]);
+  assert.equal(feed.stopped, 1);
+  assert.equal(b.feed, null);
+  assert.deepEqual(closes().map((c) => [c.args, c.on]), [[["--session", "herdr-t6", "close"], null]]);
+  assert.deepEqual(b.closes.get(targetKey(TARGET)), { status: "closed" });
+});
+
+test("a closed session shows Start and is neither restarted nor probed again", async () => {
+  sessions = [{ session: "herdr-t6", url: "https://agent.test/" }];
+  const { b, cx } = panel("/home/me/shop");
+  showing(b, TARGET);
+  b.end(TARGET, cx);
+  await drain(cx);
+  for (let i = 0; i < 3; i++) {
+    b.keep("", { at: Date.now() + i, os: "Darwin", tools: { agentBrowser: true }, sessions: [], error: null });
+    b.settle(cx);
+    b.sync(b.current(), true, cx);
+    await drain(cx);
+  }
+  const state = b.current();
+  assert.equal(state.kind, "start");
+  assert.equal(state.closed, true);
+  assert.equal(state.error, null);
+  assert.deepEqual(opens(), []);
+  assert.equal(b.feed, null);
+  assert.deepEqual(agentBrowser().map((c) => c.args), [["--session", "herdr-t6", "close"]]);
+});
+
+test("closing a remote session runs the close on that machine and stops its feed, which closes the tunnel", async () => {
+  sessions = [{ session: "herdr-t6", url: "https://agent.test/" }];
+  const { b, cx } = panel("/home/me/shop");
+  b.target = REMOTE;
+  const feed = showing(b, REMOTE);
+  b.end(REMOTE, cx);
+  await drain(cx);
+  assert.equal(feed.stopped, 1);
+  assert.deepEqual(closes().map((c) => [c.args, c.on]), [[["--session", "herdr-t6", "close"], "build_box"]]);
+  assert.deepEqual(hcCalls, []);
+  assert.equal(b.current().kind, "start");
+  assert.equal(b.current().closed, true);
+});
+
+test("closing a session leaves a feed that belongs to another terminal running", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  const other = { address: "t7", machine: null, id: "t7", session: "herdr-t7", since: 1 };
+  const feed = showing(b, other);
+  b.end(TARGET, cx);
+  await drain(cx);
+  assert.equal(feed.stopped, 0);
+  assert.equal(b.feed, feed);
+  assert.equal(closes().length, 1);
+});
+
+test("a close that agent-browser refuses shows its error over the still-running session, and starts nothing", async () => {
+  sessions = [{ session: "herdr-t6", url: "https://agent.test/" }];
+  closeResult = async () => ({ code: 1, stdout: "", stderr: "daemon busy\n" });
+  const { b, cx } = panel("/home/me/shop");
+  showing(b, TARGET);
+  b.end(TARGET, cx);
+  await drain(cx);
+  const state = b.current();
+  assert.equal(state.kind, "running");
+  assert.equal(state.error, "agent-browser close failed: daemon busy");
+  sessions = [];
+  b.keep("", { at: Date.now() + 1, os: "Darwin", tools: { agentBrowser: true }, sessions: [], error: null });
+  b.settle(cx);
+  await drain(cx);
+  assert.equal(b.current().kind, "start");
+  assert.equal(b.current().error, "agent-browser close failed: daemon busy");
+  assert.deepEqual(opens(), []);
+});
+
+test("a close that cannot run names the machine and the reason", async () => {
+  closeResult = async () => { throw new Error("machine unreachable"); };
+  const { b, cx } = panel("/home/me/shop");
+  b.end(TARGET, cx);
+  await drain(cx);
+  assert.deepEqual(b.closes.get(targetKey(TARGET)), { status: "failed", error: "agent-browser could not run on this computer: machine unreachable" });
+  assert.equal(b.current().error, "agent-browser could not run on this computer: machine unreachable");
+});
+
+test("a close with no output reports its exit code", async () => {
+  closeResult = async () => ({ code: 3, stdout: "", stderr: "" });
+  const { b, cx } = panel("/home/me/shop");
+  b.end(TARGET, cx);
+  await drain(cx);
+  assert.equal(b.current().error, "agent-browser close failed: exit 3");
+});
+
+test("Start after a close starts the session again and lets it auto-start once more", async () => {
+  sessions = [{ session: "herdr-t6", url: "https://agent.test/" }];
+  const { b, cx } = panel("/home/me/shop");
+  b.end(TARGET, cx);
+  await drain(cx);
+  b.start(TARGET, cx);
+  await drain(cx);
+  assert.equal(opens().length, 1);
+  assert.equal(b.closes.has(targetKey(TARGET)), false);
+  b.keep("", { at: Date.now(), os: "Darwin", tools: { agentBrowser: true }, sessions: [{ session: "herdr-t6", namespace: null, pid: 77, port: null, engine: "chrome", url: "https://agent.test/" }], error: null });
+  b.settle(cx);
+  assert.equal(b.current().kind, "running");
+  b.keep("", { at: Date.now() + 1, os: "Darwin", tools: { agentBrowser: true }, sessions: [], error: null });
+  b.settle(cx);
+  await drain(cx);
+  assert.equal(opens().length, 2);
+});
+
+test("a close that prints its failure only to stdout shows that text", async () => {
+  closeResult = async () => ({ code: 1, stdout: "no such session: herdr-t6\n", stderr: "" });
+  const { b, cx } = panel("/home/me/shop");
+  b.end(TARGET, cx);
+  await drain(cx);
+  assert.equal(b.current().error, "agent-browser close failed: no such session: herdr-t6");
+});
+
+async function until(check) {
+  for (let i = 0; !check(); i++) {
+    if (i > 200) throw new Error("timed out waiting");
+    await new Promise((r) => setImmediate(r));
+  }
+}
+
+function pending() {
+  let release;
+  const promise = new Promise((r) => { release = r; });
+  return { promise, release };
+}
+
+async function closeWhileStarting(b, cx, target, started) {
+  await until(started.check);
+  b.target = target;
+  b.keep(target.machine ?? "", { at: Date.now(), os: "Darwin", tools: { agentBrowser: true }, sessions: [{ session: "herdr-t6", namespace: null, pid: 77, port: null, engine: "chrome", url: "https://agent.test/" }], error: null });
+  sessions = [{ session: "herdr-t6", url: "https://agent.test/" }];
+  b.settle(cx);
+  assert.equal(b.current().kind, "running");
+  assert.equal(b.starts.has(targetKey(target)), false);
+  b.end(target, cx);
+  await cx.tasks.at(-1);
+  assert.deepEqual(b.closes.get(targetKey(target)), { status: "closed" });
+  started.release();
+  await drain(cx);
+  const state = b.current();
+  assert.equal(state.kind, "start");
+  assert.equal(state.closed, true);
+  assert.equal(state.error, null);
+  assert.equal(b.starts.has(targetKey(target)), false);
+  assert.equal(b.runs.has(targetKey(target)), false);
+  assert.deepEqual(agentBrowser().map((c) => [c.args, c.on]), [[["--session", "herdr-t6", "close"], target.machine]]);
+}
+
+test("a close made while a local auto-start's open is pending stays closed when the open returns", async () => {
+  const open = pending();
+  openResult = open.promise;
+  const { b, cx } = panel("/home/me/shop");
+  b.settle(cx);
+  await closeWhileStarting(b, cx, TARGET, { check: () => opens().length === 1, release: () => open.release({ code: 0, stdout: "", stderr: "" }) });
+  b.keep("", { at: Date.now() + 1, os: "Darwin", tools: { agentBrowser: true }, sessions: [], error: null });
+  b.settle(cx);
+  await drain(cx);
+  assert.equal(opens().length, 1);
+});
+
+test("a close made while a remote start's open is pending stays closed when the open returns", async () => {
+  const open = pending();
+  const answer = await runResult();
+  runResult = () => open.promise;
+  const { b, cx } = panel("/home/me/shop");
+  b.start(REMOTE, cx, true);
+  await closeWhileStarting(b, cx, REMOTE, { check: () => hcCalls.length === 1, release: () => open.release(answer) });
+  assert.deepEqual(hcCalls, [remoteRun, ["rm", "build_box/t1q"]]);
+});
+
+test("a close made while stream enable is pending stores no start over the close", async () => {
+  const stream = pending();
+  const exec = globalThis.host.exec;
+  globalThis.host.exec = (command, args, options) => command === "agent-browser" && args.at(-1) === "enable" ? (calls.push({ command, args, on: options?.on ?? null }), stream.promise) : exec(command, args, options);
+  const { b, cx } = panel("/home/me/shop");
+  b.start(TARGET, cx, true);
+  await until(() => streams().length === 1);
+  sessions = [{ session: "herdr-t6", url: "https://agent.test/" }];
+  b.keep("", { at: Date.now(), os: "Darwin", tools: { agentBrowser: true }, sessions: [{ session: "herdr-t6", namespace: null, pid: 77, port: null, engine: "chrome", url: "https://agent.test/" }], error: null });
+  b.settle(cx);
+  b.end(TARGET, cx);
+  await cx.tasks.at(-1);
+  stream.release({ code: 0, stdout: "", stderr: "" });
+  await drain(cx);
+  assert.equal(b.current().kind, "start");
+  assert.equal(b.current().closed, true);
+  assert.equal(b.current().error, null);
+  assert.equal(b.starts.has(targetKey(TARGET)), false);
+  assert.equal(b.runs.has(targetKey(TARGET)), false);
+});
+
+test("after one terminal's close, another terminal with no session still auto-starts", async () => {
+  sessions = [{ session: "herdr-t6", url: "https://agent.test/" }];
+  const { b, cx } = panel("/home/me/shop");
+  b.end(TARGET, cx);
+  await drain(cx);
+  b.target = { address: "t7", machine: null, id: "t7", session: "herdr-t7", since: 1 };
+  b.settle(cx);
+  await drain(cx);
+  assert.deepEqual(opens().map((args) => args[4]), ["herdr-t7"]);
 });
