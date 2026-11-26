@@ -85,7 +85,8 @@ do not meet.
 ## How the panel works with you
 
 The panel acts only for the terminal that has focus, and only while the panel
-is shown. Your session is not touched while the human looks at another
+is shown, with one exception: it ends the session of a terminal that no longer
+exists. Your session is not touched while the human looks at another
 terminal.
 
 ### It ends the session when the panel hides
@@ -100,6 +101,22 @@ So a session can end while you work, with no command from you. Before you
 run another command with `--session`, check that the panel is shown for your
 terminal, or ask the human. Any agent-browser command other than `close`
 starts a new session, and a session the panel did not start is 1x.
+
+### It ends the session when the terminal closes
+
+When your terminal closes, or the workspace it is in closes, the panel closes
+`herdr-<id>` for that terminal on its machine, shown or hidden. When the panel
+starts, it also closes each `herdr-<id>` session whose terminal no longer
+exists. It closes nothing on a machine it cannot see in full, such as a
+disconnected one.
+
+Herdr keeps a closed terminal in `hc ls --all` as `finished`, and the panel
+counts a finished terminal as gone. It closes the session only after the
+terminal is missing or finished on two looks in a row, 4 seconds apart.
+
+Use only your own terminal's `herdr-<id>`. A `herdr-<id>` session whose
+terminal does not exist is closed. The panel never touches a session with any
+other name, or a namespaced one, so close those yourself.
 
 ### It starts the session
 

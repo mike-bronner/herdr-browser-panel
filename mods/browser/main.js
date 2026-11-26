@@ -1,6 +1,6 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, hc, focused, spaces, panes, theme, window, layout, checking, settings } from "herdr";
+import { exec, hc, focused, spaces, panes, machines, theme, window, layout, checking, settings } from "herdr";
 import { DISCOVER, parseDiscovery } from "./discovery.js";
 import { installPlan, needsSudoCheck, installStep, installFailure, installDone, outputTail, settledInstall } from "./install.js";
 import { follow, targetKey, panelState, settledStart, blockShown, headerHeight, machineLabel, startCommand, remoteStartArgs, remoteStartResult, streamArgs, closeArgs, closeShown, startTitle, feedKey, takesKeys, findSession, terminalFolder, terminalSpace, sessionFolder, autoStart, trackRun, screenText } from "./panel.js";
@@ -9,6 +9,7 @@ import { slug, normalizeUrl, mouseMessage, wheelMessage, keyMessages, textMessag
 import { connector } from "./connect.js";
 import { Feed } from "./stream.js";
 import { sweep } from "./frames.js";
+import { LIST_ARGS, parseListing, completeMachines, sweepPlan, orphans, goneKey } from "./reap.js";
 
 const SCAN_MS = 4000;
 const FPS = 15;
@@ -89,6 +90,10 @@ export default class Browser extends View {
     this.sessionFolders = new Map();
     this.runs = new Map();
     this.launches = new Map();
+    this.known = new Map();
+    this.reaping = false;
+    this.sweeping = new Set();
+    this.gone = new Set();
     this.folder = null;
     this.space = null;
     this.blockOpen = false;
@@ -131,6 +136,7 @@ export default class Browser extends View {
     cx.spawn(async () => { await sweep(SWEEP_MS); });
     cx.timer.every(SCAN_MS, (cx) => {
       this.watch(cx);
+      this.reap(cx);
       if (!shown()) return void this.drop();
       if (this.keysShown !== this.takesKeys()) cx.notify();
       this.scan(cx);
@@ -177,7 +183,7 @@ export default class Browser extends View {
         globalThis.localStorage?.setItem(MEMORY_KEY, JSON.stringify(next));
       }
     }
-    if (autoStart(state, { visible: shown(), shownAt: this.shownAt, start: this.starts.get(key), run, close: this.closes.get(key) })) this.start(target, cx, true);
+    if (autoStart(state, { visible: shown(), shownAt: this.shownAt, start: this.starts.get(key), run, close: this.closes.get(key), gone: this.gone.has(goneKey(target.machine, target.id)) })) this.start(target, cx, true);
   }
 
   async detectAddress(target, folder, space) {
@@ -285,6 +291,69 @@ export default class Browser extends View {
     } catch (e) {
       return { status: "failed", error: `agent-browser could not run on ${machineLabel(target.machine)}: ${reason(e)}` };
     }
+  }
+
+  async view() {
+    try { return completeMachines(parseListing(await hc(LIST_ARGS)), machines(), panes(), spaces()); } catch { return new Map(); }
+  }
+
+  reap(cx) {
+    if (this.reaping) return;
+    this.reaping = true;
+    cx.spawn(async (cx) => {
+      try {
+        const complete = await this.view();
+        for (const [key, ids] of complete) for (const id of ids) this.gone.delete(goneKey(key, id));
+        const plan = sweepPlan(this.known, complete);
+        this.known = plan.known;
+        for (const key of plan.due) this.sweepMachine(key, cx);
+      } finally {
+        this.reaping = false;
+      }
+    });
+  }
+
+  sweepMachine(key, cx) {
+    if (this.sweeping.has(key)) return void this.unswept(key);
+    this.sweeping.add(key);
+    const machine = key || null;
+    cx.spawn(async (cx) => {
+      let done = false;
+      try {
+        const scan = await discover(machine);
+        if (scan.error) return;
+        const ids = (await this.view()).get(key), held = this.known.get(key)?.held;
+        if (!ids || !held) return;
+        const names = orphans(scan.sessions, new Set([...held, ...ids]));
+        const results = [];
+        for (const session of names) results.push(await this.endOrphan(machine, session));
+        if (names.length) this.keep(key, await discover(machine));
+        done = results.every((r) => r.status === "closed");
+      } finally {
+        this.sweeping.delete(key);
+        if (!done) this.unswept(key);
+        cx.notify();
+      }
+    });
+  }
+
+  unswept(key) {
+    const was = this.known.get(key);
+    if (was) this.known.set(key, { ...was, swept: false });
+  }
+
+  async endOrphan(machine, session) {
+    const id = session.slice("herdr-".length);
+    this.gone.add(goneKey(machine, id));
+    const target = { machine, id, address: machine ? `${machine}/${id}` : id, session };
+    const keys = [targetKey(target), targetKey({ machine, address: id })];
+    const launch = keys.map((k) => this.launches.get(k)).find(Boolean);
+    if (launch) {
+      launch.end ??= "hidden";
+      return { status: "closed" };
+    }
+    if (keys.some((k) => this.feedKey?.startsWith(`${k}|`))) await this.drop();
+    return this.closeSession(target);
   }
 
   watch(cx) {

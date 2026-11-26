@@ -182,8 +182,8 @@ export function endedQuickly(run) {
   return run?.endedAt != null && run.endedAt - run.at < QUICK_END_MS;
 }
 
-export function autoStart(state, { visible, shownAt, start, run, close }) {
-  return Boolean(visible) && state?.kind === "start" && !state.error && !start && !close && state.at >= shownAt && !endedQuickly(run);
+export function autoStart(state, { visible, shownAt, start, run, close, gone }) {
+  return Boolean(visible) && state?.kind === "start" && !state.error && !start && !close && !gone && state.at >= shownAt && !endedQuickly(run);
 }
 
 export function closeShown(hovered, state) {

@@ -616,6 +616,11 @@ test("autoStart waits for a click after a start or an install step failed", () =
   assert.equal(autoStart(state, ready()), false);
 });
 
+test("autoStart does not start a terminal whose session the panel ended because the terminal closed", () => {
+  assert.equal(autoStart(startState(), ready({ gone: true })), false);
+  assert.equal(autoStart(startState(), ready({ gone: false })), true);
+});
+
 test("autoStart does not start again while a start result is still held", () => {
   assert.equal(autoStart(startState(), ready({ start: { status: "started" } })), false);
 });

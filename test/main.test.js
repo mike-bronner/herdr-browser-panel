@@ -5,7 +5,7 @@ import { register } from "node:module";
 const stubs = {
   "gpui-kit": "const c = new Proxy(function () {}, { get: (_t, k) => k === 'then' ? undefined : () => c, apply: () => c }); export class View {} export const div = () => c; export const image = () => c; export const svg = () => c;",
   "gpui-base": "const c = new Proxy(function () {}, { get: (_t, k) => k === 'then' ? undefined : () => c, apply: () => c }); export const v_flex = () => c; export const h_flex = () => c; export const Input = { new: () => c }; export const InputState = { new: () => { let v = ''; const handlers = {}; const s = { handlers, range: null, focused: false, on(name, h) { handlers[name] = h; }, value: () => v, set_value(x) { v = x; }, set_selected_range(r) { s.range = r; }, focus() { if (s.focused) return; s.focused = true; handlers.focus?.({}, { notify() {} }); }, blur() { if (!s.focused) return; s.focused = false; handlers.blur?.({}, { notify() {} }); } }; return s; } };",
-  herdr: ["exec", "focused", "spaces", "panes", "theme", "window", "layout", "checking", "settings", "hc", "appHome", "readTextFile", "watchFolder"]
+  herdr: ["exec", "focused", "spaces", "panes", "machines", "theme", "window", "layout", "checking", "settings", "hc", "appHome", "readTextFile", "watchFolder"]
     .map((name) => `export const ${name} = (...a) => globalThis.host.${name}(...a);`).join("\n"),
   websocket: "export const WebSocket = { connect: async () => { throw new Error('no socket'); } };",
 };
@@ -22,15 +22,17 @@ const { default: Browser } = await import("../mods/browser/main.js");
 const { targetKey } = await import("../mods/browser/panel.js");
 
 const TARGET = { address: "t6", machine: null, id: "t6", session: "herdr-t6", since: 1 };
-let calls, sessions, visible, stored, openResult, detectFails, hcCalls, runResult, closeResult, events;
+let calls, sessions, remoteSessions, listing, visible, stored, openResult, detectFails, hcCalls, runResult, closeResult, events;
 
-function discovery() {
-  return ['{"os":"Darwin","agentBrowser":true}', ...sessions.map((s) => JSON.stringify({ session: s.session, dir: "/tmp/agent-browser", pid: 77, port: 0, engine: "chrome", target: { url: s.url } }))].join("\n");
+function discovery(on) {
+  return ['{"os":"Darwin","agentBrowser":true}', ...(on ? remoteSessions[on] ?? sessions : sessions).map((s) => JSON.stringify({ session: s.session, dir: s.dir ?? "/tmp/agent-browser", pid: 77, port: 0, engine: "chrome", target: { url: s.url } }))].join("\n");
 }
 
 beforeEach(() => {
   calls = [];
   sessions = [];
+  remoteSessions = {};
+  listing = null;
   visible = true;
   openResult = { code: 0, stdout: "", stderr: "" };
   detectFails = false;
@@ -45,9 +47,12 @@ beforeEach(() => {
     window: () => ({ visible }),
     settings: () => ({ zoom: 1 }),
     layout: () => null,
+    machines: () => [{ name: null, layout: "ready" }],
+    panes: () => [],
+    spaces: () => [],
     exec: async (command, args, options) => {
       calls.push({ command, args, on: options?.on ?? null });
-      if (command === "sh" && args[1] === DISCOVER) return { code: 0, stdout: discovery(), stderr: "" };
+      if (command === "sh" && args[1] === DISCOVER) return { code: 0, stdout: discovery(options?.on), stderr: "" };
       if (command === "sh" && args[1] === DETECT) {
         if (detectFails) throw new Error("machine unreachable");
         return { code: 0, stderr: "", stdout: ["home\t/home/me", `folder\t${args[3]}`, "lsof\tp9", "lsof\tf3", "lsof\tn*:3000", "lsofcwd\tp9", "lsofcwd\tfcwd", `lsofcwd\tn${args[3]}`].join("\n") };
@@ -55,13 +60,14 @@ beforeEach(() => {
       if (command === "env" && args.includes("open")) return openResult;
       if (command === "agent-browser" && args.at(-1) === "close") {
         events.push("close");
-        return closeResult();
+        return closeResult(args, options);
       }
       return { code: 0, stdout: "", stderr: "" };
     },
     hc: async (args) => {
       hcCalls.push(args);
       if (args[0] === "run") return runResult(args);
+      if (args[0] === "ls") return listing ? listing() : { code: 0, stdout: "{}", stderr: "" };
       return { code: 0, stdout: "{}", stderr: "" };
     },
   };
@@ -1486,4 +1492,368 @@ test("render notices a hide too, and reads the terminal's space for the address 
   await drain(cx);
   assert.deepEqual(closes().map((c) => c.args[1]), ["herdr-t6"]);
   assert.equal(JSON.parse(stored.get("hiddenUrls"))["|space:s1"].url, "https://agent.test/");
+});
+
+const terminalList = (addresses, machines = [], finished = []) => () => ({ code: 0, stderr: "", stdout: JSON.stringify({ hidden_finished: 0, machines, terminals: [...addresses.map((address) => ({ address, state: "live" })), ...finished.map((address) => ({ address, state: "finished", reason: "killed", rm: false }))] }) });
+const closedNames = () => closes().map((c) => `${c.on ?? ""}:${c.args[1]}`);
+const discoveries = () => calls.filter((c) => c.command === "sh" && c.args[1] === DISCOVER);
+
+function closesByName() {
+  closeResult = async (args, options) => {
+    const on = options?.on;
+    const drop = (list) => list.filter((s) => s.session !== args[1] || s.dir);
+    if (on) remoteSessions[on] = drop(remoteSessions[on] ?? []);
+    else sessions = drop(sessions);
+    return { code: 0, stdout: "✓ Browser closed", stderr: "" };
+  };
+}
+
+async function reaped(b, cx, times = 1) {
+  for (let i = 0; i < times; i++) {
+    b.reap(cx);
+    await drain(cx);
+  }
+}
+
+async function reaper(addresses, machines) {
+  const { b, cx } = panel("/home/me/shop");
+  closesByName();
+  listing = terminalList(addresses, machines);
+  await reaped(b, cx, 2);
+  return { b, cx };
+}
+
+test("a terminal that closes while the panel is hidden gets its local session closed, and nothing else", async () => {
+  visible = false;
+  sessions = [{ session: "herdr-t6" }, { session: "herdr-t9" }, { session: "notes" }, { session: "herdr-t9", dir: "/tmp/agent-browser/namespaces/qa/run" }];
+  const { b, cx } = await reaper(["t6", "t9"]);
+  assert.deepEqual(closedNames(), []);
+  listing = terminalList(["t6"], [], ["t9"]);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), []);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), [":herdr-t9"]);
+  assert.deepEqual(sessions.map((s) => s.session), ["herdr-t6", "notes", "herdr-t9"]);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), [":herdr-t9"]);
+});
+
+test("a remote terminal that closes gets its herdr-<id> session closed on its own machine", async () => {
+  remoteSessions.build_box = [{ session: "herdr-t8" }, { session: "herdr-t2" }];
+  sessions = [{ session: "herdr-t8" }];
+  globalThis.host.machines = () => [{ name: null, layout: "ready" }, { name: "build_box", layout: "ready" }];
+  const box = [{ name: "build_box", state: "connected" }];
+  const { b, cx } = await reaper(["t8", "build_box/t8", "build_box/t2"], box);
+  listing = terminalList(["t8", "build_box/t2"], box, ["build_box/t8"]);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), []);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), ["build_box:herdr-t8"]);
+  assert.deepEqual(remoteSessions.build_box.map((s) => s.session), ["herdr-t2"]);
+});
+
+test("a closed workspace ends the session of each of its terminals", async () => {
+  sessions = [{ session: "herdr-t1" }, { session: "herdr-t2" }, { session: "herdr-t3" }];
+  const { b, cx } = await reaper(["t1", "t2", "t3"]);
+  listing = terminalList(["t1"], [], ["t2", "t3"]);
+  await reaped(b, cx, 2);
+  assert.deepEqual(closedNames().sort(), [":herdr-t2", ":herdr-t3"]);
+});
+
+test("on start the panel ends herdr-<id> sessions whose terminal does not exist, and leaves other names alone", async () => {
+  sessions = [{ session: "herdr-t3" }, { session: "herdr-t6" }, { session: "notes" }, { session: "herdr-" }, { session: "herdr-t3", dir: "/tmp/agent-browser/namespaces/qa/run" }];
+  const { b, cx } = panel("/home/me/shop");
+  closesByName();
+  listing = terminalList(["t6"]);
+  await reaped(b, cx);
+  assert.deepEqual(discoveries(), []);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), [":herdr-t3"]);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), [":herdr-t3"]);
+});
+
+test("a finished terminal counts as gone, so its session closes on the sweep that follows", async () => {
+  sessions = [{ session: "herdr-t4" }, { session: "herdr-t6" }];
+  await reaper(["t6"], [], ["t4"]);
+  assert.deepEqual(hcCalls.filter((a) => a[0] === "ls").at(-1), ["ls", "--all", "--json"]);
+  assert.deepEqual(closedNames(), [":herdr-t4"]);
+});
+
+test("a terminal that shows as finished on one look and live on the next keeps its session", async () => {
+  sessions = [{ session: "herdr-t6" }, { session: "herdr-t9" }];
+  const { b, cx } = await reaper(["t6", "t9"]);
+  listing = terminalList(["t6"], [], ["t9"]);
+  await reaped(b, cx);
+  listing = terminalList(["t6", "t9"]);
+  await reaped(b, cx, 2);
+  assert.deepEqual(closedNames(), []);
+});
+
+test("a sweep for one gone terminal keeps a session whose terminal is gone on only one look", async () => {
+  sessions = [{ session: "herdr-t2" }, { session: "herdr-t6" }, { session: "herdr-t9" }];
+  const { b, cx } = await reaper(["t2", "t6", "t9"]);
+  listing = terminalList(["t6", "t9"], [], ["t2"]);
+  await reaped(b, cx);
+  listing = terminalList(["t6"], [], ["t2", "t9"]);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), [":herdr-t2"]);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), [":herdr-t2", ":herdr-t9"]);
+});
+
+test("a sweep whose machine has no record of its last looks closes nothing", async () => {
+  sessions = [{ session: "herdr-t3" }];
+  const { b, cx } = panel("/home/me/shop");
+  closesByName();
+  listing = terminalList(["t6"]);
+  b.sweepMachine("", cx);
+  await drain(cx);
+  assert.equal(discoveries().length, 1);
+  assert.deepEqual(closedNames(), []);
+});
+
+test("a pane that shows a finished terminal blocks its machine's sweep", async () => {
+  sessions = [{ session: "herdr-t3" }];
+  globalThis.host.spaces = () => [{ id: "s1", machine: null, tabs: [{ id: "a1" }] }];
+  globalThis.host.panes = () => [{ pane: "p1", terminal: "t5", tab: "a1" }];
+  await reaper(["t6"], [], ["t5"]);
+  assert.deepEqual(discoveries(), []);
+  assert.deepEqual(closedNames(), []);
+});
+
+test("the scan timer closes a stale session while the panel is hidden", async () => {
+  visible = false;
+  sessions = [{ session: "herdr-t6" }, { session: "herdr-t9" }];
+  const { cx, tick } = ticking("/home/me/shop");
+  closesByName();
+  listing = terminalList(["t6"]);
+  tick();
+  await drain(cx);
+  assert.deepEqual(closedNames(), []);
+  tick();
+  await drain(cx);
+  assert.deepEqual(closedNames(), [":herdr-t9"]);
+});
+
+test("a reap asked for while one is listing waits, and the next reap lists again", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  let release;
+  listing = () => new Promise((resolve) => { release = () => resolve(terminalList(["t6"])()); });
+  const lists = () => hcCalls.filter((a) => a[0] === "ls").length;
+  b.reap(cx);
+  b.reap(cx);
+  await Promise.resolve();
+  assert.equal(lists(), 1);
+  assert.equal(b.reaping, true);
+  release();
+  await drain(cx);
+  assert.equal(b.reaping, false);
+  listing = terminalList(["t6"]);
+  b.reap(cx);
+  assert.equal(lists(), 2);
+  await drain(cx);
+});
+
+test("nothing closes while a machine's layout is still loading or unavailable", async () => {
+  sessions = [{ session: "herdr-t3" }];
+  for (const layout of ["loading", "unavailable"]) {
+    globalThis.host.machines = () => [{ name: null, layout }];
+    const { b, cx } = await reaper(["t6"]);
+    await reaped(b, cx, 2);
+    assert.deepEqual(discoveries(), []);
+  }
+  assert.deepEqual(closedNames(), []);
+});
+
+test("a remote machine that is disconnected, not listed, or not in Herdr's machines is never swept", async () => {
+  remoteSessions.build_box = [{ session: "herdr-t3" }];
+  globalThis.host.machines = () => [{ name: null, layout: "ready" }, { name: "build_box", layout: "ready" }];
+  for (const machines of [[{ name: "build_box", state: "disconnected" }], []]) {
+    const { b, cx } = await reaper(["build_box/t6"], machines);
+    await reaped(b, cx, 2);
+  }
+  globalThis.host.machines = () => [{ name: null, layout: "ready" }];
+  const { b, cx } = await reaper(["build_box/t6"], [{ name: "build_box", state: "connected" }]);
+  await reaped(b, cx, 2);
+  assert.deepEqual(discoveries().filter((c) => c.on === "build_box"), []);
+  assert.deepEqual(closedNames(), []);
+});
+
+test("a remote machine that drops out of the list does not have its sessions closed, and is swept once it is back", async () => {
+  remoteSessions.build_box = [{ session: "herdr-t6" }, { session: "herdr-t7" }];
+  globalThis.host.machines = () => [{ name: null, layout: "ready" }, { name: "build_box", layout: "ready" }];
+  const box = [{ name: "build_box", state: "connected" }];
+  const { b, cx } = await reaper(["build_box/t6", "build_box/t7"], box);
+  listing = terminalList([], [{ name: "build_box", state: "connecting" }]);
+  await reaped(b, cx, 2);
+  assert.deepEqual(closedNames(), []);
+  listing = terminalList(["build_box/t6"], box);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), []);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), ["build_box:herdr-t7"]);
+});
+
+test("nothing closes when the terminal list fails, cannot be read, or holds an entry with no address", async () => {
+  sessions = [{ session: "herdr-t3" }];
+  for (const bad of [
+    () => ({ code: 1, stdout: "", stderr: "core down" }),
+    () => ({ code: 0, stdout: "not json", stderr: "" }),
+    () => ({ code: 0, stdout: JSON.stringify({ machines: [] }), stderr: "" }),
+    () => ({ code: 0, stdout: JSON.stringify({ machines: [], terminals: [{ state: "live" }] }), stderr: "" }),
+    async () => { throw new Error("no hc"); },
+  ]) {
+    const { b, cx } = panel("/home/me/shop");
+    listing = bad;
+    await reaped(b, cx, 3);
+  }
+  assert.deepEqual(discoveries(), []);
+  assert.deepEqual(closedNames(), []);
+});
+
+test("nothing closes on a machine while a pane shows a terminal the list lacks", async () => {
+  sessions = [{ session: "herdr-t3" }];
+  globalThis.host.spaces = () => [{ id: "s1", machine: null, tabs: [{ id: "a1" }] }];
+  globalThis.host.panes = () => [{ pane: "p1", terminal: "t5", tab: "a1" }, { pane: "p2", terminal: null, tab: "a1", mod: "files" }];
+  const { b, cx } = await reaper(["t6"]);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), []);
+  globalThis.host.panes = () => [{ pane: "p1", terminal: "t5", tab: "a9" }];
+  listing = terminalList(["t5"]);
+  await reaped(b, cx, 2);
+  assert.deepEqual(discoveries(), []);
+  globalThis.host.panes = () => [{ pane: "p1", terminal: "t5", tab: "a1" }];
+  await reaped(b, cx, 2);
+  assert.deepEqual(closedNames(), [":herdr-t3"]);
+});
+
+test("a remote pane that the list lacks blocks only its own machine", async () => {
+  sessions = [{ session: "herdr-t3" }];
+  remoteSessions.build_box = [{ session: "herdr-t3" }];
+  globalThis.host.machines = () => [{ name: null, layout: "ready" }, { name: "build_box", layout: "ready" }];
+  globalThis.host.spaces = () => [{ id: "build_box/s1", machine: "build_box", tabs: [{ id: "build_box/a1" }] }];
+  globalThis.host.panes = () => [{ pane: "build_box/p1", terminal: "t9", tab: "build_box/a1" }, { pane: "build_box/p2", terminal: "build_box/t8", tab: "build_box/a1" }];
+  await reaper(["t6", "build_box/t9"], [{ name: "build_box", state: "connected" }]);
+  assert.deepEqual(closedNames(), [":herdr-t3"]);
+});
+
+test("a sweep whose discovery fails closes nothing, and tries again on the next tick", async () => {
+  sessions = [{ session: "herdr-t3" }];
+  const { b, cx } = panel("/home/me/shop");
+  closesByName();
+  listing = terminalList(["t6"]);
+  const exec = globalThis.host.exec;
+  globalThis.host.exec = async (command, args, options) => {
+    if (command === "sh" && args[1] === DISCOVER) throw new Error("machine unreachable");
+    return exec(command, args, options);
+  };
+  await reaped(b, cx, 3);
+  assert.deepEqual(closedNames(), []);
+  globalThis.host.exec = exec;
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), [":herdr-t3"]);
+});
+
+test("a sweep keeps a session whose terminal appears between its look and its recheck", async () => {
+  const { b, cx } = await reaper(["t1", "t2"]);
+  sessions = [{ session: "herdr-t6" }];
+  let lists = 0;
+  listing = () => terminalList(lists++ < 2 ? ["t1"] : ["t1", "t6"])();
+  await reaped(b, cx, 2);
+  assert.equal(discoveries().length, 2);
+  assert.deepEqual(closedNames(), []);
+});
+
+test("a recheck that finds the machine incomplete closes nothing, and the sweep runs again", async () => {
+  sessions = [{ session: "herdr-t3" }];
+  const { b, cx } = panel("/home/me/shop");
+  closesByName();
+  let lists = 0;
+  listing = () => (lists++ === 2 ? { code: 1, stdout: "", stderr: "busy" } : terminalList(["t6"])());
+  await reaped(b, cx, 2);
+  assert.deepEqual(closedNames(), []);
+  await reaped(b, cx);
+  assert.deepEqual(closedNames(), [":herdr-t3"]);
+});
+
+test("a failed close is tried again on the next tick", async () => {
+  sessions = [{ session: "herdr-t3" }];
+  const { b, cx } = panel("/home/me/shop");
+  listing = terminalList(["t6"]);
+  closeResult = async () => ({ code: 1, stdout: "", stderr: "daemon busy" });
+  await reaped(b, cx, 2);
+  assert.equal(closes().length, 1);
+  closesByName();
+  await reaped(b, cx);
+  assert.equal(closes().length, 2);
+  assert.deepEqual(sessions, []);
+  await reaped(b, cx);
+  assert.equal(closes().length, 2);
+});
+
+test("a sweep asked for while one runs on that machine waits for the next tick", async () => {
+  const { b, cx } = panel("/home/me/shop");
+  b.known = new Map([["", { ids: new Set(), held: new Set(), swept: true }]]);
+  b.sweeping.add("");
+  b.sweepMachine("", cx);
+  assert.equal(b.known.get("").swept, false);
+  assert.deepEqual(discoveries(), []);
+});
+
+test("the shown terminal's stream stops before its session is closed, and it is not started again", async () => {
+  sessions = [{ session: "herdr-t6" }];
+  const { b, cx } = await reaper(["t6"]);
+  b.feedKey = `${targetKey(TARGET)}|77|9`;
+  b.feed = { stop: async () => { events.push("stop"); } };
+  listing = terminalList([], [], ["t6"]);
+  await reaped(b, cx, 2);
+  assert.deepEqual(events, ["stop", "close"]);
+  assert.equal(b.feed, null);
+  b.keep("", { at: Date.now(), os: "Darwin", tools: { agentBrowser: true }, sessions: [], error: null });
+  b.settle(cx);
+  await drain(cx);
+  assert.deepEqual(opens(), []);
+});
+
+test("a remote terminal's shown stream, keyed by its bare address, stops before its session is closed", async () => {
+  remoteSessions.build_box = [{ session: "herdr-t6" }];
+  globalThis.host.machines = () => [{ name: null, layout: "ready" }, { name: "build_box", layout: "ready" }];
+  const box = [{ name: "build_box", state: "connected" }];
+  const { b, cx } = await reaper(["build_box/t6"], box);
+  b.feedKey = `${targetKey({ machine: "build_box", address: "t6" })}|77|9`;
+  b.feed = { stop: async () => { events.push("stop"); } };
+  listing = terminalList([], box, ["build_box/t6"]);
+  await reaped(b, cx, 2);
+  assert.deepEqual(events, ["stop", "close"]);
+  assert.equal(b.feed, null);
+  assert.deepEqual(closedNames(), ["build_box:herdr-t6"]);
+});
+
+test("a terminal id that shows up again may start its session again", async () => {
+  sessions = [{ session: "herdr-t6" }];
+  const { b, cx } = await reaper(["t6"]);
+  listing = terminalList([], [], ["t6"]);
+  await reaped(b, cx, 2);
+  assert.ok(b.gone.has("|t6"));
+  listing = terminalList(["t6"]);
+  await reaped(b, cx);
+  assert.equal(b.gone.has("|t6"), false);
+  b.keep("", { at: Date.now(), os: "Darwin", tools: { agentBrowser: true }, sessions: [], error: null });
+  b.settle(cx);
+  await drain(cx);
+  assert.equal(opens().length, 1);
+});
+
+test("a session whose start is still running is left to that start, which then closes it", async () => {
+  const { b } = panel("/home/me/shop");
+  const launch = { end: null, closing: false };
+  b.launches.set("build_box|build_box/t6", launch);
+  assert.deepEqual(await b.endOrphan("build_box", "herdr-t6"), { status: "closed" });
+  assert.equal(launch.end, "hidden");
+  const bare = { end: "button", closing: true };
+  b.launches.set("build_box|t7", bare);
+  await b.endOrphan("build_box", "herdr-t7");
+  assert.equal(bare.end, "button");
+  assert.deepEqual(closes(), []);
 });

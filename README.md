@@ -37,6 +37,18 @@ on and can click and type in it too.
   only the Herdr window ends nothing. When you show the panel again, it starts
   a fresh session at the address from the list above. If the close or the
   start failed, it shows the error and waits for **Start browser**.
+- Ends a terminal's session when the terminal closes, or when its workspace
+  closes, on the terminal's own machine, shown or hidden. When the panel
+  starts, it also ends each `herdr-<id>` session whose terminal no longer
+  exists, such as one a Herdr quit or crash left behind.
+  - Herdr keeps a closed terminal in its list as `finished`. The panel counts
+    a finished terminal as gone.
+  - It ends a session only after its terminal is missing or finished on two
+    looks in a row, 4 seconds apart, so a terminal that shows as finished for
+    a moment keeps its session.
+  - It closes nothing on a machine it cannot see in full: before Herdr has
+    loaded it, while it is disconnected, or while the terminal list fails.
+  - It touches no session with another name, and no namespaced session.
 - Offers an **Install agent-browser** button when agent-browser is missing.
 - Has a Safari-style toolbar (Back and Forward, then an address field with
   Reload inside it), the page flush under it, and a header with the page
@@ -83,8 +95,9 @@ To install, ask your agent to follow [RECIPE.md](RECIPE.md). In short:
   for session discovery and address detection, and `ssh` tunnels for remote
   terminals. On a remote machine, `agent-browser open` runs through
   `hc run --on <machine>`. `agent-browser close` runs only when you click the
-  close button or hide the panel. `brew` or `npm` installs run only when you
-  click Install.
+  close button, hide the panel, or a terminal is gone. `hc ls --all --json`
+  lists the terminals every 4 seconds. `brew` or `npm` installs run only when
+  you click Install.
 - **Reads** only the `APP_URL` line of a project's `.env`. To find the
   address it also reads Herd's config and site folder names,
   `public/hot`, agent-browser's session files, and which folder each

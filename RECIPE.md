@@ -89,8 +89,9 @@ globe icon (`browser.svg`, 14px) and "Browser", 26px high, 12px text, radius
   get no session. A namespaced session never counts.
 - **Works only while shown.** It looks for the session every 4 seconds, and
   only while the window is visible and the browser is the stack's shown
-  child. Hiding the panel, hiding the window or focusing another terminal
-  closes the stream and its tunnel.
+  child. Only the end of a closed terminal's session, below, also runs while
+  the panel is hidden. Hiding the panel, hiding the window or focusing
+  another terminal closes the stream and its tunnel.
 - **Ends the session when the panel hides.** When the browser block stops
   showing, because the person clicked the Browser button or switched the stack
   to Files or Changes, the panel ends the shown terminal's session as the
@@ -111,6 +112,38 @@ globe icon (`browser.svg`, 14px) and "Browser", 26px high, 12px text, radius
   one close, and the start stores nothing over it. A close the hide could not
   make shows its error on the next show, and nothing starts. A hide after the
   close button keeps that button's closed mark.
+- **Ends a closed terminal's session.** A session never outlives its
+  terminal. Every 4 seconds, shown or hidden, the panel lists every terminal
+  with `hc ls --all --json`. Herdr keeps a closed terminal in that list with
+  `state` `finished` until something runs `hc rm`, so the panel counts a
+  terminal as gone when it is missing from the list or `finished`. Any other
+  state counts as live. When a terminal is gone on two looks in a row,
+  because it closed or its whole workspace closed, the panel looks for
+  sessions on that terminal's machine. It then lists the terminals again, and
+  closes each `herdr-<id>` session whose id is gone on that recheck and on
+  both looks: it stops the stream if it shows that session, then runs
+  `agent-browser --session herdr-<id> close` on that machine. A terminal that
+  shows as `finished` on one look and live on the next keeps its session.
+  The same sweep runs on each machine when the panel starts, and when a
+  machine comes back, so it also ends sessions that a Herdr quit or crash
+  left behind.
+  - It closes nothing on a machine while its view of that machine is
+    incomplete: the list failed or could not be read, the machine is not
+    `connected` in the list, `machines()` does not show its layout as
+    `ready`, a pane shows a terminal the list lacks or lists as `finished`,
+    or its session files could not be read. A machine is swept only on its
+    second complete look in a row. A sweep that could not finish, or a close
+    that failed, runs again on the next tick.
+  - It touches only `herdr-<id>` sessions that are not namespaced. A session
+    with any other name keeps running.
+  - It never runs another agent-browser command to check a session, since
+    any command but `close` starts a new one. It reads only the session
+    files.
+  - A start still running for that terminal is told to end, as on a hide,
+    and runs the one close itself. The panel does not start a session again
+    for a terminal it ended this way, unless the id comes back.
+  - Several panel copies can sweep at once. A second close of the same
+    session does nothing.
 - **Starts the session.** When the focused terminal has no session, the panel
   starts one with `env AGENT_BROWSER_STREAM_MAX_WIDTH=8192
   AGENT_BROWSER_STREAM_MAX_HEIGHT=8192 agent-browser --session herdr-<id>
@@ -220,6 +253,8 @@ props:
 - `panel.js`: focus to session name, panel states, restart rules.
 - `address.js`: the address detection script and its parser.
 - `discovery.js`: the session discovery script and its parser.
+- `reap.js`: the terminal list, which machines the panel sees in full, and
+  which sessions belong to no terminal.
 - `install.js`: install plans.
 - `page.js`: input messages, picture fit, viewport steps, the ssh tunnel
   arguments.
@@ -230,13 +265,13 @@ props:
 - `frames.js`: frames written as JPEG files and shown as images.
 - Art: `back.svg`, `forward.svg`, `reload.svg`, `lock.svg`, and the shipped
   `mods/pane/close.svg`.
-- `herdr` functions: `exec`, `hc`, `focused`, `spaces`, `panes`, `theme`,
-  `window`, `layout`, `settings`, `checking`, `appHome`, `readTextFile`,
-  `watchFolder`. Also `net`, `fs/promises`, `websocket`, `fetch` and
-  `localStorage` (`lastUrls`, at most 200 folders, and `hiddenUrls`, at most
-  200 spaces or folders).
-- `hc` commands: `machine ls --json`, `get <name> --json`, `run --bg --rm`,
-  `kill <name>`.
+- `herdr` functions: `exec`, `hc`, `focused`, `spaces`, `panes`, `machines`,
+  `theme`, `window`, `layout`, `settings`, `checking`, `appHome`,
+  `readTextFile`, `watchFolder`. Also `net`, `fs/promises`, `websocket`,
+  `fetch` and `localStorage` (`lastUrls`, at most 200 folders, and
+  `hiddenUrls`, at most 200 spaces or folders).
+- `hc` commands: `ls --all --json`, `machine ls --json`, `get <name> --json`,
+  `run --bg --rm`, `kill <name>`.
 
 **`mods/tabs-browser`**, `mod.json` with `cloned_from` `tabs` 0.1.18: a copy of
 Herdr's shipped `tabs` mod with these changes only:
